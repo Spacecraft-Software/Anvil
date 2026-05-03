@@ -188,6 +188,154 @@ fn tokenize_line(line: &str, file: &Path, line_no: u32) -> Result<Option<TokenLi
     }))
 }
 
+// ── Argument-level helpers (used by include.rs and resolver.rs) ──────────────
+//
+// These operate on already-tokenized argument strings.  They live here next
+// to the lexer because they round out the "string-level" toolkit (alongside
+// quoting and comment stripping); applying them per directive is the
+// resolver's job, not the lexer's.
+
+/// Expands a leading `~/` or `~` in a path-shaped value to the current
+/// user's home directory.
+///
+/// `~user/...` is *not* expanded — it is preserved verbatim with a warning,
+/// matching Windows OpenSSH behavior across all platforms (per-user home
+/// lookup would require an additional `getpwnam`-equivalent dep that this
+/// crate does not pull in).  If [`dirs::home_dir`] returns `None`, the
+/// value is returned unchanged.
+///
+/// Tilde *only* at the very beginning of `value` is recognized; embedded
+/// `~` characters are preserved (e.g. `/path/~name` is unchanged).
+pub(crate) fn expand_tilde(value: &str) -> String {
+    if value == "~" {
+        return dirs::home_dir()
+            .map_or_else(|| value.to_owned(), |h| h.to_string_lossy().into_owned());
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            let mut p = home;
+            p.push(rest);
+            return p.to_string_lossy().into_owned();
+        }
+        return value.to_owned();
+    }
+    if value.starts_with('~') {
+        // `~user/...` form — log once per call site and leave literal.
+        log::warn!("ssh_config: `~user/` syntax is not supported; treating literally: {value}",);
+    }
+    value.to_owned()
+}
+
+/// Expands `${VAR}` and `$VAR` references in a value against the process
+/// environment.
+///
+/// Recognized forms:
+/// - `${IDENT}` — braced, where `IDENT` is `[A-Za-z_][A-Za-z0-9_]*`.
+/// - `$IDENT` — unbraced, same identifier rule.
+/// - A bare `$` (followed by EOF or a non-identifier character) is preserved
+///   verbatim.  An unterminated `${...` is also preserved.
+///
+/// Unknown variables expand to the empty string, matching POSIX shell
+/// behavior and OpenSSH's `ssh_config(5)` env-expansion rules.
+pub(crate) fn expand_env(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+
+        match chars.peek().copied() {
+            Some('{') => {
+                chars.next();
+                let mut name = String::new();
+                let mut closed = false;
+                for inner in chars.by_ref() {
+                    if inner == '}' {
+                        closed = true;
+                        break;
+                    }
+                    name.push(inner);
+                }
+                if closed {
+                    if let Ok(val) = std::env::var(&name) {
+                        out.push_str(&val);
+                    }
+                    // Unknown variable -> empty (matches POSIX / OpenSSH).
+                } else {
+                    // Unterminated `${VAR` — preserve verbatim.
+                    out.push('$');
+                    out.push('{');
+                    out.push_str(&name);
+                }
+            }
+            Some(next) if next.is_ascii_alphabetic() || next == '_' => {
+                let mut name = String::new();
+                while let Some(&peek) = chars.peek() {
+                    if peek.is_ascii_alphanumeric() || peek == '_' {
+                        name.push(peek);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if let Ok(val) = std::env::var(&name) {
+                    out.push_str(&val);
+                }
+            }
+            _ => out.push('$'),
+        }
+    }
+
+    out
+}
+
+/// Shell-style wildcard match.
+///
+/// Supports:
+/// - `*` — matches any sequence of characters, including empty.
+/// - `?` — matches any single character.
+///
+/// Character classes (`[abc]`, `[!abc]`) are *not* supported in this
+/// initial implementation; they are extremely uncommon in `ssh_config`
+/// usage.  Adding them is a follow-up if the matrix demands it.
+///
+/// Iterative with star-backtracking — O(`pat.len()` * `val.len()`) worst
+/// case, no recursion, no allocation beyond the char buffers.
+pub(crate) fn wildcard_match(pattern: &str, value: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let val: Vec<char> = value.chars().collect();
+    let mut i = 0_usize;
+    let mut j = 0_usize;
+    let mut star_i: Option<usize> = None;
+    let mut match_j: usize = 0;
+
+    while j < val.len() {
+        if i < pat.len() && (pat[i] == '?' || pat[i] == val[j]) {
+            i += 1;
+            j += 1;
+        } else if i < pat.len() && pat[i] == '*' {
+            star_i = Some(i);
+            match_j = j;
+            i += 1;
+        } else if let Some(si) = star_i {
+            i = si + 1;
+            match_j += 1;
+            j = match_j;
+        } else {
+            return false;
+        }
+    }
+
+    while i < pat.len() && pat[i] == '*' {
+        i += 1;
+    }
+
+    i == pat.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +476,133 @@ mod tests {
         // The empty quoted run still produces an (empty) argument.
         assert_eq!(toks[0].keyword, "user");
         assert_eq!(toks[0].args, vec![""]);
+    }
+
+    // ── expand_tilde ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn expand_tilde_replaces_leading_slash_form() {
+        let home = dirs::home_dir().expect("home dir available in test env");
+        let expected = home.join(".ssh").join("config");
+        // Compare as paths so Windows' mixed `/` vs `\` separators (the
+        // input retains its forward slashes when pushed) compare equal
+        // to the platform-native form.
+        let actual = expand_tilde("~/.ssh/config");
+        assert_eq!(Path::new(&actual), expected);
+    }
+
+    #[test]
+    fn expand_tilde_alone_replaces_to_home() {
+        let home = dirs::home_dir().expect("home dir available in test env");
+        assert_eq!(expand_tilde("~"), home.to_string_lossy().into_owned());
+    }
+
+    #[test]
+    fn expand_tilde_in_middle_unchanged() {
+        assert_eq!(expand_tilde("/path/~name"), "/path/~name");
+    }
+
+    #[test]
+    fn expand_tilde_user_form_treated_literally() {
+        // `~user/...` is not supported on any platform; preserved verbatim.
+        assert_eq!(expand_tilde("~root/foo"), "~root/foo");
+    }
+
+    #[test]
+    fn expand_tilde_no_tilde_unchanged() {
+        assert_eq!(expand_tilde("/etc/ssh/ssh_config"), "/etc/ssh/ssh_config");
+        assert_eq!(expand_tilde(""), "");
+    }
+
+    // ── expand_env ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn expand_env_braced_known_var() {
+        // PATH is set in every reasonable test environment.
+        let result = expand_env("${PATH}");
+        let path = std::env::var("PATH").expect("PATH set in test env");
+        assert_eq!(result, path);
+    }
+
+    #[test]
+    fn expand_env_unbraced_known_var() {
+        let result = expand_env("$PATH");
+        let path = std::env::var("PATH").expect("PATH set in test env");
+        assert_eq!(result, path);
+    }
+
+    #[test]
+    fn expand_env_braced_unknown_var_is_empty() {
+        // Use an extremely unlikely name to avoid accidental collisions.
+        assert_eq!(expand_env("${ANVIL_DEFINITELY_UNSET_XYZZY_42}"), "");
+        assert_eq!(expand_env("a-${ANVIL_DEFINITELY_UNSET_XYZZY_42}-b"), "a--b",);
+    }
+
+    #[test]
+    fn expand_env_dollar_alone_preserved() {
+        assert_eq!(expand_env("price: $"), "price: $");
+        // Digit isn't a valid identifier start, so `$5` is preserved.
+        assert_eq!(expand_env("$5 dollars"), "$5 dollars");
+    }
+
+    #[test]
+    fn expand_env_unterminated_brace_preserved() {
+        // No closing `}` — preserve the partial sequence verbatim.
+        assert_eq!(expand_env("${UNCLOSED"), "${UNCLOSED");
+    }
+
+    #[test]
+    fn expand_env_no_dollar_unchanged() {
+        assert_eq!(expand_env("/etc/ssh/ssh_config"), "/etc/ssh/ssh_config");
+    }
+
+    // ── wildcard_match ───────────────────────────────────────────────────────
+
+    #[test]
+    fn wildcard_match_exact() {
+        assert!(wildcard_match("github.com", "github.com"));
+        assert!(!wildcard_match("github.com", "gitlab.com"));
+    }
+
+    #[test]
+    fn wildcard_match_star_anything() {
+        assert!(wildcard_match("*", "anything"));
+        assert!(wildcard_match("*", ""));
+    }
+
+    #[test]
+    fn wildcard_match_star_suffix() {
+        assert!(wildcard_match("*.com", "github.com"));
+        assert!(wildcard_match("*.com", ".com"));
+        assert!(!wildcard_match("*.com", "github.org"));
+    }
+
+    #[test]
+    fn wildcard_match_question() {
+        assert!(wildcard_match("git?ub.com", "github.com"));
+        assert!(!wildcard_match("g?", "github"));
+        assert!(wildcard_match("g?", "gh"));
+    }
+
+    #[test]
+    fn wildcard_match_combined() {
+        assert!(wildcard_match("*.example.???", "foo.example.com"));
+        assert!(!wildcard_match("*.example.???", "foo.example.online"));
+        assert!(wildcard_match("a*b*c", "axxxbyyyc"));
+    }
+
+    #[test]
+    fn wildcard_match_empty() {
+        assert!(wildcard_match("", ""));
+        assert!(!wildcard_match("", "x"));
+        assert!(!wildcard_match("x", ""));
+    }
+
+    #[test]
+    fn wildcard_match_consecutive_stars_collapse() {
+        // `**` is treated as `*` (greedy match) — same observable behavior.
+        assert!(wildcard_match("**", "anything"));
+        assert!(wildcard_match("a**b", "ab"));
+        assert!(wildcard_match("a**b", "axyzb"));
     }
 }

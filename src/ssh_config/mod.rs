@@ -13,18 +13,24 @@
 //!
 //! - [`lexer`] — line-oriented tokenizer.  Strips comments, joins
 //!   continuation lines, splits on whitespace honoring quoted arguments,
-//!   recognizes the `keyword=value` form.
+//!   recognizes the `keyword=value` form.  Also exposes argument-level
+//!   helpers ([`lexer::expand_tilde`], [`lexer::expand_env`],
+//!   [`lexer::wildcard_match`]) used by include resolution and (later)
+//!   the directive resolver.
 //! - [`parser`] — groups token lines into Host blocks, handling implicit
 //!   global directives (before the first `Host`) and the `Match` keyword.
+//! - [`include`] — recursively resolves `Include` directives, with
+//!   tilde/env expansion, glob matching on the final component, a 16-deep
+//!   nesting limit, and cycle detection by canonicalized path.
 //!
-//! The matcher, `Include` resolver, tilde/env expansion, and the public
-//! `resolve()` entry point land in subsequent sub-milestones (M12.2-M12.4).
-//! `Match` blocks are explicitly deferred to v1.1 per PRD §12 Q1; they are
-//! recognized at parse time so directive grouping stays correct, but never
-//! match a host.
+//! The matcher and the public `resolve()` entry point land in subsequent
+//! sub-milestones (M12.3-M12.4).  `Match` blocks are explicitly deferred
+//! to v1.1 per PRD §12 Q1; they are recognized at parse time so directive
+//! grouping stays correct, but never match a host.
 //!
 //! All types in this module are crate-private until the public API ships
 //! in M12.4.
 
+pub(crate) mod include;
 pub(crate) mod lexer;
 pub(crate) mod parser;
