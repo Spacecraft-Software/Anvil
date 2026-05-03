@@ -25,8 +25,8 @@
 use std::process::Command;
 use std::time::Instant;
 
-use criterion::{criterion_group, criterion_main, Criterion};
 use anvil_ssh::{GitwayConfig, GitwaySession};
+use criterion::{criterion_group, criterion_main, Criterion};
 
 /// Returns `true` when the integration environment variable is set.
 fn integration_enabled() -> bool {
