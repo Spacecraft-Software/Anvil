@@ -25,7 +25,7 @@
 use std::fs;
 use std::path::Path;
 
-use anvil_ssh::ssh_config::{SshConfigPaths, resolve};
+use anvil_ssh::ssh_config::{resolve, SshConfigPaths};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
