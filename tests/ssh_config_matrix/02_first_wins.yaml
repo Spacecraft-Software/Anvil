@@ -1,0 +1,12 @@
+description: "First-occurrence-wins across multiple matching blocks"
+
+config: |
+  Host gh
+    User specific
+  Host *
+    User wildcard
+
+host: gh
+
+expected:
+  user: specific

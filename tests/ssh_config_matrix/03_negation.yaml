@@ -1,0 +1,12 @@
+description: "Negated pattern excludes the host from a block"
+
+config: |
+  Host * !work
+    User general
+
+host: work
+
+# `work` is excluded by the !work pattern, so the block does not apply.
+# No User directive should be set.
+expected:
+  user: null

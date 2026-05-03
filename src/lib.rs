@@ -55,11 +55,19 @@ pub mod session;
 pub mod sshsig;
 pub mod time;
 
+// `ssh_config(5)` parser and resolver.  Public API is re-exported below;
+// the sub-modules (lexer, parser, include, matcher, resolver) themselves
+// are crate-private.
+pub mod ssh_config;
+
 // ── Flat re-exports (FR-23) ───────────────────────────────────────────────────
 
 pub use config::AnvilConfig;
 pub use error::AnvilError;
 pub use session::AnvilSession;
+pub use ssh_config::{
+    AlgList, DirectiveSource, ResolvedSshConfig, SshConfigPaths, StrictHostKeyChecking,
+};
 
 // ── Deprecated 0.1.x compatibility aliases ────────────────────────────────────
 //
