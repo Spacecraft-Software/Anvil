@@ -1,0 +1,18 @@
+# Acceptance fixture for `anvil_ssh::ssh_config::resolve()`.
+# Each fixture is one (config text, host, expected resolved values) triple.
+# Walked by tests/ssh_config_acceptance.rs.
+
+description: "Basic Host block: HostName, User, Port"
+
+config: |
+  Host gh
+    HostName github.com
+    User git
+    Port 2222
+
+host: gh
+
+expected:
+  hostname: github.com
+  user: git
+  port: 2222
