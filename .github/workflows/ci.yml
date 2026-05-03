@@ -48,7 +48,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y perl
-      - uses: dtolnay/rust-toolchain@stable
+      # Install on the EXACT toolchain rust-toolchain.toml pins (1.88.0).
+      # `@stable` would install rustfmt/clippy on the latest stable instead,
+      # but `cargo` ends up calling the pinned 1.88.0 toolchain that lacks
+      # those components, producing `'cargo-fmt' is not installed for the
+      # toolchain '1.88.0-x86_64-unknown-linux-gnu'`.
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
