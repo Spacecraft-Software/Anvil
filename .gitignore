@@ -1,0 +1,33 @@
+# Cargo build output
+/target/
+
+# Cargo.lock for libraries: committed for reproducible CI builds.  Consumers'
+# lockfiles still take precedence; this commitment only affects Anvil's own
+# dev/test workflow.
+
+# Editor and IDE artefacts
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Claude Code per-project config and local state
+.claude/
+
+# Nix
+result
+result-*
+.direnv/
+
+# Criterion benchmark output
+criterion/
+
+# cargo-geiger output
+geiger/
+
+# Temporary files
+*.tmp
+*.bak

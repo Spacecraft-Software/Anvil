@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name          = "anvil-ssh"
+version       = "0.1.0"
+edition       = "2021"
+license       = "GPL-3.0-or-later"
+authors       = ["Mohamed Hammad <MJ@S3cure.me>"]
+repository    = "https://github.com/Steelbore/Anvil"
+homepage      = "https://github.com/Steelbore/Anvil"
+documentation = "https://docs.rs/anvil-ssh"
+description   = "Pure-Rust SSH stack for Git tooling: transport, keys, signing, agent. Foundation library extracted from Steelbore/Gitway."
+keywords      = ["ssh", "git", "gitlab", "codeberg", "transport"]
+categories    = ["network-programming", "authentication"]
+readme        = "README.md"
+rust-version  = "1.88"
+
+[dependencies]
+# Use aws-lc-rs crypto backend: non-FIPS builds require no CMake/bindgen/Go,
+# and it provides post-quantum cryptography (PQC) primitives that `ring` lacks.
+russh         = { version = "0.59", default-features = false, features = ["flate2", "aws-lc-rs", "rsa"] }
+tokio         = { version = "1",    features = ["io-util", "io-std", "rt-multi-thread", "net", "sync", "macros", "signal", "time", "process"] }
+thiserror     = "2"
+log           = "0.4"
+dirs          = "6"
+zeroize       = "1.7"
+
+# Pure-Rust OpenSSH key format and SSHSIG (for keygen / sign / verify).
+# `ssh-key`'s RustCrypto stack (ed25519-dalek 2.x, rsa 0.9, p256/384/521) is
+# used only for keygen and signature formatting; `russh`'s `aws-lc-rs` remains
+# the transport crypto. PrivateKey values never cross the boundary between
+# the two stacks. Both declare `#![forbid(unsafe_code)]`.
+ssh-key       = { version = "0.6.7", default-features = false, features = ["ed25519", "ecdsa", "rsa", "p256", "p384", "p521", "encryption", "std"] }
+sha2          = "0.10"
+rand_core     = { version = "0.6", features = ["std", "getrandom"] }
+
+# SSH agent wire-protocol client + server (cross-platform: Unix sockets +
+# Windows named pipes interoperable with `\\.\pipe\openssh-ssh-agent`).
+ssh-agent-lib = "0.5.2"
+ed25519-dalek = "2"
+signature     = "2"
+rsa           = "0.9"
+async-trait   = "0.1"
+futures       = "0.3"
+
+# Unix-only signal / fork / setsid primitives used by the agent daemon's
+# shutdown path and socket permission tightening.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["fs", "process", "signal", "user"] }
+
+[dev-dependencies]
+tokio     = { version = "1", features = ["io-util", "io-std", "rt-multi-thread", "net", "sync", "macros", "signal", "time", "process"] }
+tempfile  = "3"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name    = "throughput"
+harness = false
+
+# ── Lints ─────────────────────────────────────────────────────────────────────
+
+[lints.rust]
+ambiguous_negative_literals     = "warn"
+missing_debug_implementations   = "warn"
+redundant_imports               = "warn"
+redundant_lifetimes             = "warn"
+trivial_numeric_casts           = "warn"
+unsafe_op_in_unsafe_fn          = "warn"
+unused_lifetimes                = "warn"
+
+[lints.clippy]
+cargo       = { level = "warn", priority = -1 }
+complexity  = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic    = { level = "warn", priority = -1 }
+perf        = { level = "warn", priority = -1 }
+style       = { level = "warn", priority = -1 }
+suspicious  = { level = "warn", priority = -1 }
+
+allow_attributes_without_reason     = "warn"
+assertions_on_result_states         = "warn"
+clone_on_ref_ptr                    = "warn"
+deref_by_slicing                    = "warn"
+empty_drop                          = "warn"
+empty_structs_with_brackets         = "warn"
+fn_to_numeric_cast_any              = "warn"
+map_err_ignore                      = "warn"
+redundant_type_annotations          = "warn"
+semicolon_outside_block             = "warn"
+string_to_string                    = "warn"
+undocumented_unsafe_blocks          = "warn"
+unnecessary_safety_comment          = "warn"
+unnecessary_safety_doc              = "warn"
+unused_result_ok                    = "warn"
+
+# Structured logging uses literal strings with format args intentionally.
+literal_string_with_formatting_args = "allow"
+# `module_name_repetitions` fires often in well-named pub API types.
+module_name_repetitions             = "allow"
+# russh pulls in crypto crates at different versions; mismatch is unavoidable.
+multiple_crate_versions             = "allow"
+# AnvilError carries a std::backtrace::Backtrace (heap-allocated); boxing it
+# in every return type would harm ergonomics with no meaningful benefit on
+# the non-hot authentication path.
+result_large_err                    = "allow"
+cargo_common_metadata               = "allow"
