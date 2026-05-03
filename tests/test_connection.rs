@@ -62,7 +62,7 @@ async fn host_key_mismatch_is_rejected() {
 
     // Verify the server is actually reachable first.
     let reachability_config = AnvilConfig::builder("github.com")
-        .skip_host_check(true)
+        .strict_host_key_checking(anvil_ssh::StrictHostKeyChecking::No)
         .build();
     let _s = AnvilSession::connect(&reachability_config)
         .await
@@ -96,12 +96,12 @@ async fn insecure_skip_host_check_bypasses_verification() {
     }
 
     let config = AnvilConfig::builder("github.com")
-        .skip_host_check(true)
+        .strict_host_key_checking(anvil_ssh::StrictHostKeyChecking::No)
         .build();
 
     let session = AnvilSession::connect(&config)
         .await
-        .expect("connection must succeed with skip_host_check");
+        .expect("connection must succeed with StrictHostKeyChecking::No");
 
     session.close().await.expect("disconnect must succeed");
 }

@@ -18,10 +18,13 @@ use russh::client;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg};
 use russh::{cipher, kex, Disconnect, Preferred};
 
+use std::path::PathBuf;
+
 use crate::config::AnvilConfig;
 use crate::error::{AnvilError, AnvilErrorKind};
 use crate::hostkey;
 use crate::relay;
+use crate::ssh_config::StrictHostKeyChecking;
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
@@ -30,10 +33,22 @@ use crate::relay;
 /// Validates the server host key (FR-6, FR-7, FR-8) and captures any
 /// authentication banner the server sends before confirming the session.
 struct GitwayHandler {
-    /// Expected SHA-256 fingerprints for the target host.
+    /// Expected SHA-256 fingerprints for the target host.  May be empty
+    /// in [`StrictHostKeyChecking::AcceptNew`] mode for an unknown host
+    /// — the handler will record the first fingerprint it sees in that
+    /// case.
     fingerprints: Vec<String>,
-    /// When `true`, host-key verification is skipped (FR-8).
-    skip_check: bool,
+    /// Host-key verification policy (FR-8).
+    policy: StrictHostKeyChecking,
+    /// Hostname being connected to — needed by the
+    /// [`StrictHostKeyChecking::AcceptNew`] write path so the new
+    /// fingerprint line can be labelled with the right host.
+    host: String,
+    /// Path to the user-configured `known_hosts` file, if any.  Required
+    /// for [`StrictHostKeyChecking::AcceptNew`] writes; if `None`, the
+    /// handler downgrades to [`StrictHostKeyChecking::Yes`] semantics
+    /// with a warning.
+    custom_known_hosts: Option<PathBuf>,
     /// Buffer for the last authentication banner received from the server.
     ///
     /// GitHub sends "Hi <user>! You've successfully authenticated…" here.
@@ -49,7 +64,9 @@ impl fmt::Debug for GitwayHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GitwayHandler")
             .field("fingerprints", &self.fingerprints)
-            .field("skip_check", &self.skip_check)
+            .field("policy", &self.policy)
+            .field("host", &self.host)
+            .field("custom_known_hosts", &self.custom_known_hosts)
             .field("auth_banner", &self.auth_banner)
             .field("verified_fingerprint", &self.verified_fingerprint)
             .finish()
@@ -63,24 +80,57 @@ impl client::Handler for GitwayHandler {
         &mut self,
         server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        if self.skip_check {
-            log::warn!("host-key verification skipped (--insecure-skip-host-check)");
+        let fp = server_public_key.fingerprint(HashAlg::Sha256).to_string();
+        log::debug!("session: checking server host key {fp}");
+
+        // StrictHostKeyChecking=No: accept any key.  Equivalent to the
+        // 0.2.x `--insecure-skip-host-check` path.
+        if matches!(self.policy, StrictHostKeyChecking::No) {
+            log::warn!("host-key verification skipped (StrictHostKeyChecking=No)");
+            if let Ok(mut guard) = self.verified_fingerprint.lock() {
+                *guard = Some(fp);
+            }
             return Ok(true);
         }
 
-        let fp = server_public_key.fingerprint(HashAlg::Sha256).to_string();
-
-        log::debug!("session: checking server host key {fp}");
-
+        // Match against the pinned/known set first.  This path is
+        // identical for `Yes` and `AcceptNew`: a verified existing
+        // fingerprint always passes.
         if self.fingerprints.iter().any(|f| f == &fp) {
             log::debug!("session: host key verified: {fp}");
             if let Ok(mut guard) = self.verified_fingerprint.lock() {
                 *guard = Some(fp);
             }
-            Ok(true)
-        } else {
-            Err(AnvilError::host_key_mismatch(fp))
+            return Ok(true);
         }
+
+        // No match.  In `AcceptNew` mode with a fully-unknown host (no
+        // existing fingerprints at all) AND a writable
+        // `custom_known_hosts` path, record the new fingerprint and
+        // accept.  Any other case is a hard mismatch.
+        if matches!(self.policy, StrictHostKeyChecking::AcceptNew) && self.fingerprints.is_empty() {
+            if let Some(path) = &self.custom_known_hosts {
+                hostkey::append_known_host(path, &self.host, &fp)?;
+                log::info!(
+                    "host-key first-use accepted: {} -> {} (recorded in {})",
+                    self.host,
+                    fp,
+                    path.display(),
+                );
+                if let Ok(mut guard) = self.verified_fingerprint.lock() {
+                    *guard = Some(fp);
+                }
+                return Ok(true);
+            }
+            log::warn!(
+                "StrictHostKeyChecking=accept-new requested but no \
+                 custom_known_hosts path is set; downgrading to Yes \
+                 semantics for {}",
+                self.host,
+            );
+        }
+
+        Err(AnvilError::host_key_mismatch(fp))
     }
 
     async fn auth_banner(
@@ -143,14 +193,38 @@ impl AnvilSession {
     /// match any pinned fingerprint.
     pub async fn connect(config: &AnvilConfig) -> Result<Self, AnvilError> {
         let russh_cfg = Arc::new(build_russh_config(config.inactivity_timeout));
+        // For StrictHostKeyChecking=AcceptNew with a writable known_hosts
+        // path, an empty fingerprint set is acceptable — the handler will
+        // record the first fingerprint it sees.  Every other policy
+        // (Yes / No) treats the lookup error as fatal as before.
         let fingerprints =
-            hostkey::fingerprints_for_host(&config.host, &config.custom_known_hosts)?;
+            match hostkey::fingerprints_for_host(&config.host, &config.custom_known_hosts) {
+                Ok(fps) => fps,
+                Err(e) => {
+                    if matches!(
+                        config.strict_host_key_checking,
+                        StrictHostKeyChecking::AcceptNew
+                    ) && config.custom_known_hosts.is_some()
+                    {
+                        log::info!(
+                            "session: no fingerprints known for {}; \
+                         accept-new will record on first connection",
+                            config.host,
+                        );
+                        Vec::new()
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
         let auth_banner = Arc::new(Mutex::new(None));
         let verified_fingerprint = Arc::new(Mutex::new(None));
 
         let handler = GitwayHandler {
             fingerprints,
-            skip_check: config.skip_host_check,
+            policy: config.strict_host_key_checking,
+            host: config.host.clone(),
+            custom_known_hosts: config.custom_known_hosts.clone(),
             auth_banner: Arc::clone(&auth_banner),
             verified_fingerprint: Arc::clone(&verified_fingerprint),
         };

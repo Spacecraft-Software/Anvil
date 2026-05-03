@@ -217,6 +217,58 @@ pub fn fingerprints_for_host(
     Ok(fps)
 }
 
+/// Appends `host SHA256:<fingerprint>` as a new line to the `known_hosts`
+/// file at `path`, creating the file (and any missing parent directories)
+/// if needed.
+///
+/// Used by [`crate::ssh_config::StrictHostKeyChecking::AcceptNew`] to
+/// record the fingerprint of an otherwise-unknown host on first
+/// connection.  This is the minimum write surface — file locking and
+/// duplicate-detection are deferred to the post-M12 TOFU UX.
+///
+/// # Errors
+///
+/// Returns an error if the parent directory cannot be created, or if
+/// the file cannot be opened for append, or if the write fails.
+pub(crate) fn append_known_host(
+    path: &Path,
+    host: &str,
+    fingerprint: &str,
+) -> Result<(), AnvilError> {
+    use std::io::Write;
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                AnvilError::invalid_config(format!(
+                    "could not create known_hosts parent {}: {e}",
+                    parent.display(),
+                ))
+            })?;
+        }
+    }
+
+    let line = format!("{host} {fingerprint}\n");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .map_err(|e| {
+            AnvilError::invalid_config(format!(
+                "could not open known_hosts {} for append: {e}",
+                path.display(),
+            ))
+        })?;
+    file.write_all(line.as_bytes()).map_err(|e| {
+        AnvilError::invalid_config(format!(
+            "could not write to known_hosts {}: {e}",
+            path.display(),
+        ))
+    })?;
+
+    Ok(())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

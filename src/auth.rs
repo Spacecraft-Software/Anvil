@@ -91,12 +91,24 @@ impl fmt::Debug for AgentConnection {
 /// Returns an error only for unexpected failures (permission denied, corrupt
 /// key data, etc.).  A missing or encrypted key is not an error at this stage.
 pub fn find_identity(config: &AnvilConfig) -> Result<IdentityResolution, AnvilError> {
-    // Priority 1: explicit --identity path.
-    if let Some(ref path) = config.identity_file {
-        return probe_key(path);
+    // Explicit-paths branch: when the config carries any `identity_files`
+    // entries (from `--identity`, an `IdentityFile` directive in
+    // `ssh_config`, or both), probe them in order and return the first
+    // usable one.  Per OpenSSH behavior, an explicit `IdentityFile` /
+    // `--identity` *suppresses* the default search — we do not fall
+    // through to `~/.ssh/id_*` when the explicit list is exhausted.
+    if !config.identity_files.is_empty() {
+        for path in &config.identity_files {
+            match probe_key(path)? {
+                IdentityResolution::NotFound => {}
+                found => return Ok(found),
+            }
+        }
+        return Ok(IdentityResolution::NotFound);
     }
 
-    // Priority 2: well-known default paths.
+    // Default-paths branch: only reached when no explicit identity files
+    // were configured.  Walk the well-known default key files in order.
     for path in default_key_paths() {
         if !path.exists() {
             continue;
@@ -263,7 +275,7 @@ mod tests {
     #[test]
     fn explicit_nonexistent_path_returns_not_found() {
         let config = AnvilConfig::builder("github.com")
-            .identity_file("/tmp/gitway_test_nonexistent_key_xyz")
+            .add_identity_file("/tmp/gitway_test_nonexistent_key_xyz")
             .build();
         let result = find_identity(&config).unwrap();
         assert!(matches!(result, IdentityResolution::NotFound));
@@ -275,7 +287,7 @@ mod tests {
         // only that path and return NotFound — it must NOT fall through to
         // the default ~/.ssh search.
         let config = AnvilConfig::builder("github.com")
-            .identity_file("/tmp/gitway_test_explicit_priority_xyz")
+            .add_identity_file("/tmp/gitway_test_explicit_priority_xyz")
             .build();
         let result = find_identity(&config).unwrap();
         // The file doesn't exist so we get NotFound, but crucially the
@@ -284,6 +296,20 @@ mod tests {
             matches!(result, IdentityResolution::NotFound),
             "explicit path must short-circuit default search"
         );
+    }
+
+    #[test]
+    fn multi_identity_files_probed_in_order() {
+        // All paths nonexistent: each is probed; final result is NotFound.
+        // Order verification beyond NotFound requires actual key files,
+        // which is the integration-test layer's job.
+        let config = AnvilConfig::builder("github.com")
+            .add_identity_file("/tmp/gitway_test_id_a_xyz")
+            .add_identity_file("/tmp/gitway_test_id_b_xyz")
+            .add_identity_file("/tmp/gitway_test_id_c_xyz")
+            .build();
+        let result = find_identity(&config).unwrap();
+        assert!(matches!(result, IdentityResolution::NotFound));
     }
 
     #[test]
