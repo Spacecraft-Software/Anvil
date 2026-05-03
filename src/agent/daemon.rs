@@ -37,7 +37,7 @@
 //! use std::path::PathBuf;
 //! use anvil_ssh::agent::daemon::{AgentDaemonConfig, run};
 //!
-//! # async fn doc() -> Result<(), anvil_ssh::GitwayError> {
+//! # async fn doc() -> Result<(), anvil_ssh::AnvilError> {
 //! let cfg = AgentDaemonConfig {
 //!     socket_path: PathBuf::from("/tmp/gitway-agent.sock"),
 //!     pid_file: None,
@@ -64,7 +64,7 @@ use ssh_key::private::KeypairData;
 use ssh_key::{Algorithm, HashAlg, PrivateKey, Signature};
 use tokio::sync::Mutex;
 
-use crate::GitwayError;
+use crate::AnvilError;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -328,14 +328,14 @@ impl AgentSession {
 /// OpenSSH 8.2+ (Jan 2020) always requests SHA-2 for RSA, GitHub
 /// dropped SHA-1 support in 2022, and there is no modern client that
 /// needs the downgrade.
-fn sign_with_key(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature, GitwayError> {
+fn sign_with_key(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature, AnvilError> {
     use signature::Signer;
     match key.algorithm() {
         Algorithm::Ed25519 | Algorithm::Ecdsa { .. } => key
             .try_sign(data)
-            .map_err(|e| GitwayError::signing(format!("sign failed: {e}"))),
+            .map_err(|e| AnvilError::signing(format!("sign failed: {e}"))),
         Algorithm::Rsa { .. } => sign_rsa(key, data, flags),
-        other => Err(GitwayError::invalid_config(format!(
+        other => Err(AnvilError::invalid_config(format!(
             "agent daemon sign: algorithm {} not supported",
             other.as_str()
         ))),
@@ -349,32 +349,32 @@ fn sign_with_key(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature,
 /// to reconstruct the `rsa::RsaPrivateKey` ourselves from the raw
 /// components. The fix is present in `ssh-key` 0.7; until then this
 /// inline build stays.
-fn sign_rsa(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature, GitwayError> {
+fn sign_rsa(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature, AnvilError> {
     use rsa::pkcs1v15::SigningKey;
     use rsa::signature::{RandomizedSigner, SignatureEncoding};
     use sha2::{Sha256, Sha512};
 
     let KeypairData::Rsa(rsa_keypair) = key.key_data() else {
-        return Err(GitwayError::signing(
+        return Err(AnvilError::signing(
             "sign_rsa invoked on non-RSA key".to_string(),
         ));
     };
 
     let private = rsa::RsaPrivateKey::from_components(
         rsa::BigUint::try_from(&rsa_keypair.public.n)
-            .map_err(|e| GitwayError::signing(format!("rsa modulus parse: {e}")))?,
+            .map_err(|e| AnvilError::signing(format!("rsa modulus parse: {e}")))?,
         rsa::BigUint::try_from(&rsa_keypair.public.e)
-            .map_err(|e| GitwayError::signing(format!("rsa exponent parse: {e}")))?,
+            .map_err(|e| AnvilError::signing(format!("rsa exponent parse: {e}")))?,
         rsa::BigUint::try_from(&rsa_keypair.private.d)
-            .map_err(|e| GitwayError::signing(format!("rsa private exponent parse: {e}")))?,
+            .map_err(|e| AnvilError::signing(format!("rsa private exponent parse: {e}")))?,
         vec![
             rsa::BigUint::try_from(&rsa_keypair.private.p)
-                .map_err(|e| GitwayError::signing(format!("rsa prime p parse: {e}")))?,
+                .map_err(|e| AnvilError::signing(format!("rsa prime p parse: {e}")))?,
             rsa::BigUint::try_from(&rsa_keypair.private.q)
-                .map_err(|e| GitwayError::signing(format!("rsa prime q parse: {e}")))?,
+                .map_err(|e| AnvilError::signing(format!("rsa prime q parse: {e}")))?,
         ],
     )
-    .map_err(|e| GitwayError::signing(format!("rsa from_components: {e}")))?;
+    .map_err(|e| AnvilError::signing(format!("rsa from_components: {e}")))?;
 
     let mut rng = rand_core::OsRng;
     let (algorithm, sig_bytes) = if flags & proto_signature::RSA_SHA2_512 != 0 {
@@ -396,7 +396,7 @@ fn sign_rsa(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature, Gitw
             sig.to_bytes().into_vec(),
         )
     } else {
-        return Err(GitwayError::signing(
+        return Err(AnvilError::signing(
             "rsa sign: SHA-1 `ssh-rsa` requested but not supported — \
              client must request rsa-sha2-256 or rsa-sha2-512 \
              (OpenSSH has done so since 8.2)"
@@ -405,7 +405,7 @@ fn sign_rsa(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature, Gitw
     };
 
     Signature::new(algorithm, sig_bytes)
-        .map_err(|e| GitwayError::signing(format!("ssh signature encode: {e}")))
+        .map_err(|e| AnvilError::signing(format!("ssh signature encode: {e}")))
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -414,7 +414,7 @@ fn sign_rsa(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature, Gitw
 ///
 /// # Errors
 ///
-/// Returns [`GitwayError`] if the socket cannot be bound, the pid file
+/// Returns [`AnvilError`] if the socket cannot be bound, the pid file
 /// cannot be written, or the accept loop returns with an error.
 ///
 /// # Termination
@@ -422,7 +422,7 @@ fn sign_rsa(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature, Gitw
 /// On `SIGTERM` or `SIGINT` the function returns `Ok(())` after unlinking
 /// the socket and removing the pid file. Every stored key is zeroed as
 /// the `KeyStore` drops.
-pub async fn run(config: AgentDaemonConfig) -> Result<(), GitwayError> {
+pub async fn run(config: AgentDaemonConfig) -> Result<(), AnvilError> {
     write_pid_file(config.pid_file.as_deref())?;
 
     let store = Arc::new(Mutex::new(KeyStore::new()));
@@ -522,7 +522,7 @@ async fn accept_until_shutdown(socket_path: &Path, session: AgentSession) {
 // ── Socket / pid plumbing ─────────────────────────────────────────────────────
 
 #[cfg(unix)]
-fn bind_unix_socket(path: &Path) -> Result<tokio::net::UnixListener, GitwayError> {
+fn bind_unix_socket(path: &Path) -> Result<tokio::net::UnixListener, AnvilError> {
     use std::os::unix::fs::PermissionsExt as _;
     // Remove any stale socket file so bind() doesn't fail with "address in use".
     let _ = std::fs::remove_file(path);
@@ -534,7 +534,7 @@ fn bind_unix_socket(path: &Path) -> Result<tokio::net::UnixListener, GitwayError
     Ok(listener)
 }
 
-fn write_pid_file(path: Option<&Path>) -> Result<(), GitwayError> {
+fn write_pid_file(path: Option<&Path>) -> Result<(), AnvilError> {
     let Some(p) = path else {
         return Ok(());
     };

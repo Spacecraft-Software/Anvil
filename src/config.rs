@@ -5,20 +5,20 @@
 //! # Examples
 //!
 //! ```rust
-//! use anvil_ssh::GitwayConfig;
+//! use anvil_ssh::AnvilConfig;
 //! use std::time::Duration;
 //!
 //! // Connect to GitHub (default):
-//! let config = GitwayConfig::github();
+//! let config = AnvilConfig::github();
 //!
 //! // Connect to GitLab:
-//! let config = GitwayConfig::gitlab();
+//! let config = AnvilConfig::gitlab();
 //!
 //! // Connect to Codeberg:
-//! let config = GitwayConfig::codeberg();
+//! let config = AnvilConfig::codeberg();
 //!
 //! // Connect to any host with a custom port:
-//! let config = GitwayConfig::builder("git.example.com")
+//! let config = AnvilConfig::builder("git.example.com")
 //!     .port(22)
 //!     .username("git")
 //!     .inactivity_timeout(Duration::from_secs(60))
@@ -35,13 +35,13 @@ use crate::hostkey::{
 
 // ── Public config type ────────────────────────────────────────────────────────
 
-/// Immutable configuration for a [`GitwaySession`](crate::GitwaySession).
+/// Immutable configuration for a [`AnvilSession`](crate::AnvilSession).
 ///
-/// Construct via [`GitwayConfig::builder`], or use one of the convenience
+/// Construct via [`AnvilConfig::builder`], or use one of the convenience
 /// constructors ([`github`](Self::github), [`gitlab`](Self::gitlab),
 /// [`codeberg`](Self::codeberg)) for the most common targets.
 #[derive(Debug, Clone)]
-pub struct GitwayConfig {
+pub struct AnvilConfig {
     /// Primary SSH host (e.g. `github.com`, `gitlab.com`, `codeberg.org`).
     pub host: String,
     /// Primary SSH port (default: 22).
@@ -71,15 +71,15 @@ pub struct GitwayConfig {
     pub fallback: Option<(String, u16)>,
 }
 
-impl GitwayConfig {
+impl AnvilConfig {
     /// Begin building a config targeting `host`.
     ///
     /// All optional fields default to sensible values. No fallback host is
     /// set by default; use the provider-specific convenience constructors
     /// ([`github`](Self::github), [`gitlab`](Self::gitlab)) if you want the
     /// port-443 fallback pre-configured.
-    pub fn builder(host: impl Into<String>) -> GitwayConfigBuilder {
-        GitwayConfigBuilder::new(host.into())
+    pub fn builder(host: impl Into<String>) -> AnvilConfigBuilder {
+        AnvilConfigBuilder::new(host.into())
     }
 
     /// Convenience constructor for the default GitHub target (`github.com:22`).
@@ -113,12 +113,12 @@ impl GitwayConfig {
 
 // ── Builder ───────────────────────────────────────────────────────────────────
 
-/// Builder for [`GitwayConfig`].
+/// Builder for [`AnvilConfig`].
 ///
-/// Obtained via [`GitwayConfig::builder`].
+/// Obtained via [`AnvilConfig::builder`].
 #[derive(Debug)]
 #[must_use]
-pub struct GitwayConfigBuilder {
+pub struct AnvilConfigBuilder {
     host: String,
     port: u16,
     username: String,
@@ -131,7 +131,7 @@ pub struct GitwayConfigBuilder {
     fallback: Option<(String, u16)>,
 }
 
-impl GitwayConfigBuilder {
+impl AnvilConfigBuilder {
     fn new(host: String) -> Self {
         Self {
             host,
@@ -207,10 +207,10 @@ impl GitwayConfigBuilder {
         self
     }
 
-    /// Finalise and return the [`GitwayConfig`].
+    /// Finalise and return the [`AnvilConfig`].
     #[must_use]
-    pub fn build(self) -> GitwayConfig {
-        GitwayConfig {
+    pub fn build(self) -> AnvilConfig {
+        AnvilConfig {
             host: self.host,
             port: self.port,
             username: self.username,

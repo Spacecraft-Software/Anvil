@@ -2,6 +2,33 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.2.0] — 2026-05-03
+
+### Changed
+
+- **Breaking (with deprecated aliases):** the three flat re-exports at the crate root were renamed to drop the inherited `Gitway*` prefix:
+  - `GitwaySession` → `AnvilSession`
+  - `GitwayConfig` → `AnvilConfig`
+  - `GitwayError` → `AnvilError`
+
+  The legacy names remain available as `#[deprecated]` re-exports for one major version (per [Gitway PRD §7.4](https://github.com/steelbore/gitway/blob/main/Gitway-PRD-v1.0.md)), so consumers that depended on `anvil-ssh = "0.1"` continue to compile with a deprecation warning until they migrate.  Migration is mechanical:
+
+  ```rust
+  // before
+  use anvil_ssh::{GitwayConfig, GitwaySession, GitwayError};
+  // after
+  use anvil_ssh::{AnvilConfig, AnvilSession, AnvilError};
+  ```
+
+  The deprecated aliases will be removed in `1.0.0`.
+
+- The `GitwayConfigBuilder` type returned by `AnvilConfig::builder()` is also renamed to `AnvilConfigBuilder`.  It is reachable via `anvil_ssh::config::AnvilConfigBuilder`; no flat re-export at the crate root in either 0.1 or 0.2 (consumers typically obtain it through `AnvilConfig::builder()`).
+
+### Notes
+
+- All internal references in `src/` (struct definitions, doc-comments, tests) have been updated to the new names.  `cargo build`, `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check` all pass on the renamed source.
+- Downstream tracking issue: the [Steelbore/Gitway](https://github.com/Steelbore/Gitway) workspace bumps its `anvil-ssh` pin to `0.2.0` in a follow-up PR and renames its in-source `GitwaySession`/`Config`/`Error` references to drop the deprecation warnings.
+
 ## [0.1.0] — 2026-05-03
 
 ### Added
@@ -18,5 +45,5 @@ All notable changes to Anvil are documented here.  Format follows [Keep a Change
 
 ### Notes
 
-- Type names (`GitwaySession`, `GitwayConfig`, `GitwayError`) carry forward from the source crate unchanged.  They will be renamed to `AnvilSession` / `AnvilConfig` / `AnvilError` in `0.2.0` with `#[deprecated]` aliases.  See [Gitway PRD §7.4](https://github.com/steelbore/gitway/blob/main/Gitway-PRD-v1.0.md) for the extraction plan.
+- Type names carried forward from the source crate as `GitwaySession` / `GitwayConfig` / `GitwayError` to keep the lift-and-shift extraction zero-rename.  These were superseded in 0.2.0 (see above); the legacy names remain available as `#[deprecated]` re-exports for one major version per [Gitway PRD §7.4](https://github.com/steelbore/gitway/blob/main/Gitway-PRD-v1.0.md).
 - This is a *cold-start* extraction: the new repo's git history starts here.  Per-commit history of the original library remains in [steelbore/gitway](https://github.com/steelbore/gitway) — `git blame` and historical context for any line of code can be found there.

@@ -35,7 +35,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::GitwayError;
+use crate::AnvilError;
 
 /// Hard cap for how long the daemon will wait on an askpass reply.
 ///
@@ -89,10 +89,10 @@ pub async fn confirm(prompt: &str) -> bool {
 ///
 /// # Errors
 ///
-/// Returns [`GitwayError`] when the path fails security validation
+/// Returns [`AnvilError`] when the path fails security validation
 /// (not absolute, world-writable), the spawn itself fails, or the
 /// child does not exit within [`ASKPASS_TIMEOUT`].
-pub async fn confirm_with(askpass: &OsString, prompt: &str) -> Result<bool, GitwayError> {
+pub async fn confirm_with(askpass: &OsString, prompt: &str) -> Result<bool, AnvilError> {
     let path = PathBuf::from(askpass);
     validate_security(&path)?;
 
@@ -110,13 +110,13 @@ pub async fn confirm_with(askpass: &OsString, prompt: &str) -> Result<bool, Gitw
     let status = match timeout(ASKPASS_TIMEOUT, cmd.status()).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            return Err(GitwayError::signing(format!(
+            return Err(AnvilError::signing(format!(
                 "askpass spawn failed for {}: {e}",
                 path.display()
             )));
         }
         Err(_elapsed) => {
-            return Err(GitwayError::signing(format!(
+            return Err(AnvilError::signing(format!(
                 "askpass {} did not respond within {:?}",
                 path.display(),
                 ASKPASS_TIMEOUT
@@ -138,15 +138,15 @@ pub async fn confirm_with(askpass: &OsString, prompt: &str) -> Result<bool, Gitw
 /// subset of the Unix contract we can still enforce. Windows users
 /// wanting stricter checks should place their askpass binary in a
 /// directory their account has exclusive write access to.
-fn validate_security(askpass: &Path) -> Result<(), GitwayError> {
+fn validate_security(askpass: &Path) -> Result<(), AnvilError> {
     if !askpass.is_absolute() {
-        return Err(GitwayError::invalid_config(format!(
+        return Err(AnvilError::invalid_config(format!(
             "SSH_ASKPASS {} must be an absolute path",
             askpass.display()
         )));
     }
     let meta = std::fs::metadata(askpass).map_err(|e| {
-        GitwayError::invalid_config(format!(
+        AnvilError::invalid_config(format!(
             "SSH_ASKPASS {} cannot be stat()ed: {e}",
             askpass.display()
         ))
@@ -158,7 +158,7 @@ fn validate_security(askpass: &Path) -> Result<(), GitwayError> {
         // to the user but writable by anyone on the system is an
         // exploit waiting to happen.
         if meta.permissions().mode() & 0o002 != 0 {
-            return Err(GitwayError::invalid_config(format!(
+            return Err(AnvilError::invalid_config(format!(
                 "SSH_ASKPASS {} is world-writable and cannot be trusted",
                 askpass.display()
             )));

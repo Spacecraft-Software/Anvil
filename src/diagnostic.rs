@@ -18,13 +18,13 @@
 //! path.  Stdout is always left untouched (SFRS Rule 1) — the diagnostic
 //! writes exclusively to stderr.
 
-use crate::error::GitwayError;
+use crate::error::AnvilError;
 use crate::time::now_iso8601;
 
 /// Emits the single-line diagnostic record with an explicit exit code and
 /// a reason string.  Use this from the shim binaries (`gitway-keygen`,
 /// `gitway-add`) where the reason codes are selected from a local static
-/// table; use [`emit_for`] when a [`GitwayError`] is already in hand.
+/// table; use [`emit_for`] when a [`AnvilError`] is already in hand.
 pub fn emit(code: u32, reason: &str) {
     let argv: Vec<String> = std::env::args().collect();
     eprintln!(
@@ -34,8 +34,8 @@ pub fn emit(code: u32, reason: &str) {
     );
 }
 
-/// Emits the diagnostic record for a [`GitwayError`], reusing the error's
+/// Emits the diagnostic record for a [`AnvilError`], reusing the error's
 /// mapped exit code and string error class.
-pub fn emit_for(err: &GitwayError) {
+pub fn emit_for(err: &AnvilError) {
     emit(err.exit_code(), err.error_code());
 }

@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use anvil_ssh::{hostkey, GitwayConfig, GitwaySession};
+use anvil_ssh::{hostkey, AnvilConfig, AnvilSession};
 
 /// Returns `true` when integration tests are enabled.
 fn integration_enabled() -> bool {
@@ -35,8 +35,8 @@ async fn connect_to_github_verifies_host_key() {
         return;
     }
 
-    let config = GitwayConfig::github();
-    let session = GitwaySession::connect(&config)
+    let config = AnvilConfig::github();
+    let session = AnvilSession::connect(&config)
         .await
         .expect("connection and host-key verification must succeed");
 
@@ -61,10 +61,10 @@ async fn host_key_mismatch_is_rejected() {
     let fake_fp = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
     // Verify the server is actually reachable first.
-    let reachability_config = GitwayConfig::builder("github.com")
+    let reachability_config = AnvilConfig::builder("github.com")
         .skip_host_check(true)
         .build();
-    let _s = GitwaySession::connect(&reachability_config)
+    let _s = AnvilSession::connect(&reachability_config)
         .await
         .expect("server must be reachable");
 
@@ -73,11 +73,11 @@ async fn host_key_mismatch_is_rejected() {
     let tmp = tempfile::NamedTempFile::new().expect("temp file");
     std::fs::write(tmp.path(), format!("github.com {fake_fp}\n")).expect("write temp known_hosts");
 
-    let config = GitwayConfig::builder("github.com")
+    let config = AnvilConfig::builder("github.com")
         .custom_known_hosts(tmp.path())
         .build();
 
-    let result = GitwaySession::connect(&config).await;
+    let result = AnvilSession::connect(&config).await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
@@ -95,11 +95,11 @@ async fn insecure_skip_host_check_bypasses_verification() {
         return;
     }
 
-    let config = GitwayConfig::builder("github.com")
+    let config = AnvilConfig::builder("github.com")
         .skip_host_check(true)
         .build();
 
-    let session = GitwaySession::connect(&config)
+    let session = AnvilSession::connect(&config)
         .await
         .expect("connection must succeed with skip_host_check");
 
@@ -129,10 +129,10 @@ async fn cold_start_handshake_is_fast() {
         return;
     }
 
-    let config = GitwayConfig::github();
+    let config = AnvilConfig::github();
 
     let t0 = Instant::now();
-    let session = GitwaySession::connect(&config)
+    let session = AnvilSession::connect(&config)
         .await
         .expect("connection must succeed for timing test");
     let elapsed = t0.elapsed();

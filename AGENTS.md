@@ -28,7 +28,7 @@ Pure-Rust SSH stack for Git tooling: transport, keys, signing, agent.  Foundatio
 1. Find the provider's official SSH host key fingerprint documentation page.
 2. Add `const DEFAULT_<PROVIDER>_HOST: &str` and `const <PROVIDER>_FINGERPRINTS` to `src/hostkey.rs`.
 3. Add a `fingerprints_for_host` match arm covering the new host constant.
-4. Add a `GitwayConfig::<provider>()` convenience constructor in `src/config.rs`.
+4. Add a `AnvilConfig::<provider>()` convenience constructor in `src/config.rs`.
 5. Add tests for the new provider in `hostkey.rs`.
 6. Update `CLAUDE.md` with the new fingerprint rotation URL.
 7. Open a PR; downstream consumers (Gitway and friends) bump their pinned `anvil-ssh` version on next release.
@@ -50,9 +50,9 @@ Pure-Rust SSH stack for Git tooling: transport, keys, signing, agent.  Foundatio
 
 ## Type rename roadmap
 
-- `v0.1.x` — types stay `GitwaySession` / `GitwayConfig` / `GitwayError` (zero-rename extraction; downstream churn limited to crate-name change).
-- `v0.2.0` — rename to `AnvilSession` / `AnvilConfig` / `AnvilError` with `#[deprecated]` aliases.  Aliases stay for one major version.
-- `v1.0.0` — stabilization; cut concurrently with Gitway 1.0.0.
+- `v0.1.x` — types carried over from the source crate as `GitwaySession` / `GitwayConfig` / `GitwayError` to keep the lift-and-shift extraction zero-rename. Downstream churn limited to crate-name change.
+- `v0.2.0` (current) — types renamed to `AnvilSession` / `AnvilConfig` / `AnvilError`. Legacy `Gitway*` names retained as `#[deprecated]` re-exports for one major version.
+- `v1.0.0` — stabilization; cut concurrently with Gitway 1.0.0. Deprecated `Gitway*` aliases removed.
 
 ## Versioning
 

@@ -18,7 +18,7 @@
 //!
 //! # Errors
 //!
-//! All operations return [`GitwayError`]. Cryptographic failures (RNG,
+//! All operations return [`AnvilError`]. Cryptographic failures (RNG,
 //! encryption) and I/O failures are both folded into that type; the caller
 //! distinguishes via the `is_*` predicates.
 //!
@@ -39,7 +39,7 @@ use rand_core::OsRng;
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, LineEnding, PrivateKey, PublicKey};
 use zeroize::Zeroizing;
 
-use crate::GitwayError;
+use crate::AnvilError;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -80,13 +80,9 @@ impl KeyType {
 ///
 /// # Errors
 ///
-/// Returns [`GitwayError::signing`] on RNG failure or on an invalid
+/// Returns [`AnvilError::signing`] on RNG failure or on an invalid
 /// `bits` value (for RSA: below 2048 or above 16384).
-pub fn generate(
-    kind: KeyType,
-    bits: Option<u32>,
-    comment: &str,
-) -> Result<PrivateKey, GitwayError> {
+pub fn generate(kind: KeyType, bits: Option<u32>, comment: &str) -> Result<PrivateKey, AnvilError> {
     let algorithm = match kind {
         KeyType::Ed25519 => Algorithm::Ed25519,
         KeyType::EcdsaP256 => Algorithm::Ecdsa {
@@ -101,7 +97,7 @@ pub fn generate(
         KeyType::Rsa => {
             let b = bits.unwrap_or(DEFAULT_RSA_BITS);
             if !(MIN_RSA_BITS..=MAX_RSA_BITS).contains(&b) {
-                return Err(GitwayError::invalid_config(format!(
+                return Err(AnvilError::invalid_config(format!(
                     "RSA key size {b} is out of range ({MIN_RSA_BITS}-{MAX_RSA_BITS})"
                 )));
             }
@@ -111,21 +107,21 @@ pub fn generate(
 
     let mut rng = OsRng;
     let mut key = PrivateKey::random(&mut rng, algorithm)
-        .map_err(|e| GitwayError::signing(format!("key generation failed: {e}")))?;
+        .map_err(|e| AnvilError::signing(format!("key generation failed: {e}")))?;
     key.set_comment(comment);
     Ok(key)
 }
 
 /// Generates an RSA private key of the requested size.
-fn generate_rsa(bits: u32, comment: &str) -> Result<PrivateKey, GitwayError> {
+fn generate_rsa(bits: u32, comment: &str) -> Result<PrivateKey, AnvilError> {
     // `ssh_key::PrivateKey::random` does not support RSA directly; build it
     // via ssh_key::private::RsaKeypair::random and wrap. This path only
     // compiles with the `rsa` feature on `ssh-key`.
     let mut rng = OsRng;
     let usize_bits = usize::try_from(bits)
-        .map_err(|_e| GitwayError::invalid_config(format!("RSA bit count {bits} is too large")))?;
+        .map_err(|_e| AnvilError::invalid_config(format!("RSA bit count {bits} is too large")))?;
     let rsa_key = ssh_key::private::RsaKeypair::random(&mut rng, usize_bits)
-        .map_err(|e| GitwayError::signing(format!("RSA key generation failed: {e}")))?;
+        .map_err(|e| AnvilError::signing(format!("RSA key generation failed: {e}")))?;
     let mut key = PrivateKey::from(rsa_key);
     key.set_comment(comment);
     Ok(key)
@@ -158,36 +154,36 @@ const MAX_RSA_BITS: u32 = 16384;
 ///
 /// # Errors
 ///
-/// Returns [`GitwayError`] on I/O failure, encryption failure, or when the
+/// Returns [`AnvilError`] on I/O failure, encryption failure, or when the
 /// output parent directory does not exist.
 pub fn write_keypair(
     key: &PrivateKey,
     path: &Path,
     passphrase: Option<&Zeroizing<String>>,
-) -> Result<(), GitwayError> {
+) -> Result<(), AnvilError> {
     let key_to_write = match passphrase {
         Some(pp) if pp.is_empty() => {
-            return Err(GitwayError::invalid_config(
+            return Err(AnvilError::invalid_config(
                 "empty passphrase is not allowed — pass `None` to leave the key unencrypted",
             ));
         }
         Some(pp) => {
             let mut rng = OsRng;
             key.encrypt(&mut rng, pp.as_bytes())
-                .map_err(|e| GitwayError::signing(format!("failed to encrypt private key: {e}")))?
+                .map_err(|e| AnvilError::signing(format!("failed to encrypt private key: {e}")))?
         }
         None => key.clone(),
     };
 
     let private_pem = key_to_write
         .to_openssh(LineEnding::LF)
-        .map_err(|e| GitwayError::signing(format!("failed to serialize private key: {e}")))?;
+        .map_err(|e| AnvilError::signing(format!("failed to serialize private key: {e}")))?;
     write_private_file(path, private_pem.as_bytes())?;
 
     let public = key.public_key();
     let public_line = public
         .to_openssh()
-        .map_err(|e| GitwayError::signing(format!("failed to serialize public key: {e}")))?;
+        .map_err(|e| AnvilError::signing(format!("failed to serialize public key: {e}")))?;
     let pub_path = pub_path_for(path);
     let mut out = String::with_capacity(public_line.len() + 1);
     out.push_str(&public_line);
@@ -202,7 +198,7 @@ pub fn write_keypair(
 /// platforms this is a plain write — file-system access controls are the
 /// user's responsibility.
 #[cfg(unix)]
-fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), GitwayError> {
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), AnvilError> {
     use std::os::unix::fs::OpenOptionsExt as _;
     let mut f = fs::OpenOptions::new()
         .create(true)
@@ -217,7 +213,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), GitwayError> {
 }
 
 #[cfg(not(unix))]
-fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), GitwayError> {
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), AnvilError> {
     fs::write(path, bytes)?;
     Ok(())
 }
@@ -238,26 +234,26 @@ fn pub_path_for(path: &Path) -> PathBuf {
 ///
 /// # Errors
 ///
-/// Returns [`GitwayError`] if the old passphrase is wrong, the key cannot be
+/// Returns [`AnvilError`] if the old passphrase is wrong, the key cannot be
 /// read, or the new key cannot be written.
 pub fn change_passphrase(
     path: &Path,
     old: Option<&Zeroizing<String>>,
     new: Option<&Zeroizing<String>>,
-) -> Result<(), GitwayError> {
+) -> Result<(), AnvilError> {
     let pem = fs::read_to_string(path)?;
     let loaded = PrivateKey::from_openssh(&pem)
-        .map_err(|e| GitwayError::signing(format!("failed to parse existing key: {e}")))?;
+        .map_err(|e| AnvilError::signing(format!("failed to parse existing key: {e}")))?;
 
     let decrypted = if loaded.is_encrypted() {
         let pp = old.ok_or_else(|| {
-            GitwayError::invalid_config(
+            AnvilError::invalid_config(
                 "existing key is encrypted but no old passphrase was provided",
             )
         })?;
         loaded
             .decrypt(pp.as_bytes())
-            .map_err(|e| GitwayError::signing(format!("old passphrase is wrong: {e}")))?
+            .map_err(|e| AnvilError::signing(format!("old passphrase is wrong: {e}")))?
     } else {
         loaded
     };
@@ -288,15 +284,15 @@ pub fn fingerprint(public: &PublicKey, hash: HashAlg) -> String {
 ///
 /// # Errors
 ///
-/// Returns [`GitwayError`] on I/O or parsing failure.
-pub fn extract_public(path: &Path, out: Option<&Path>) -> Result<(), GitwayError> {
+/// Returns [`AnvilError`] on I/O or parsing failure.
+pub fn extract_public(path: &Path, out: Option<&Path>) -> Result<(), AnvilError> {
     let pem = fs::read_to_string(path)?;
     let key = PrivateKey::from_openssh(&pem)
-        .map_err(|e| GitwayError::signing(format!("failed to parse private key: {e}")))?;
+        .map_err(|e| AnvilError::signing(format!("failed to parse private key: {e}")))?;
     let public_line = key
         .public_key()
         .to_openssh()
-        .map_err(|e| GitwayError::signing(format!("failed to serialize public key: {e}")))?;
+        .map_err(|e| AnvilError::signing(format!("failed to serialize public key: {e}")))?;
     let target = match out {
         Some(p) => p.to_owned(),
         None => pub_path_for(path),

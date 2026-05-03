@@ -25,7 +25,7 @@
 use std::process::Command;
 use std::time::Instant;
 
-use anvil_ssh::{GitwayConfig, GitwaySession};
+use anvil_ssh::{AnvilConfig, AnvilSession};
 use criterion::{criterion_group, criterion_main, Criterion};
 
 /// Returns `true` when the integration environment variable is set.
@@ -47,8 +47,8 @@ fn bench_gitway_exec(c: &mut Criterion) {
     c.bench_function("gitway_exec", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let config = GitwayConfig::github();
-                let mut session = GitwaySession::connect(&config)
+                let config = AnvilConfig::github();
+                let mut session = AnvilSession::connect(&config)
                     .await
                     .expect("gitway connect");
                 session

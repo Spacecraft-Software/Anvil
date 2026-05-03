@@ -15,17 +15,17 @@
 //! ## Quick start
 //!
 //! ```no_run
-//! use anvil_ssh::{GitwayConfig, GitwaySession};
+//! use anvil_ssh::{AnvilConfig, AnvilSession};
 //!
-//! # async fn doc() -> Result<(), anvil_ssh::GitwayError> {
+//! # async fn doc() -> Result<(), anvil_ssh::AnvilError> {
 //! // GitHub
-//! let config = GitwayConfig::github();
+//! let config = AnvilConfig::github();
 //! // GitLab
-//! let config = GitwayConfig::gitlab();
+//! let config = AnvilConfig::gitlab();
 //! // Codeberg
-//! let config = GitwayConfig::codeberg();
+//! let config = AnvilConfig::codeberg();
 //!
-//! let mut session = GitwaySession::connect(&config).await?;
+//! let mut session = AnvilSession::connect(&config).await?;
 //! session.authenticate_best(&config).await?;
 //!
 //! let exit_code = session.exec("git-upload-pack 'user/repo.git'").await?;
@@ -57,6 +57,23 @@ pub mod time;
 
 // ── Flat re-exports (FR-23) ───────────────────────────────────────────────────
 
-pub use config::GitwayConfig;
-pub use error::GitwayError;
-pub use session::GitwaySession;
+pub use config::AnvilConfig;
+pub use error::AnvilError;
+pub use session::AnvilSession;
+
+// ── Deprecated 0.1.x compatibility aliases ────────────────────────────────────
+//
+// Re-export the renamed types under their legacy `Gitway*` names so that
+// crates which depended on `anvil-ssh = "0.1"` (or the `gitway-lib` shim
+// that re-exports `anvil_ssh::*`) continue to compile after the 0.2.0
+// rename.  These aliases emit a `#[deprecated]` warning on use; remove
+// them in 1.0 per Gitway PRD §7.4.
+
+#[deprecated(since = "0.2.0", note = "renamed to `AnvilSession`")]
+pub use AnvilSession as GitwaySession;
+
+#[deprecated(since = "0.2.0", note = "renamed to `AnvilConfig`")]
+pub use AnvilConfig as GitwayConfig;
+
+#[deprecated(since = "0.2.0", note = "renamed to `AnvilError`")]
+pub use AnvilError as GitwayError;

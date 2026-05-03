@@ -3,7 +3,7 @@
 // Updated 2026-04-12: added verified_fingerprint tracking for SFRS JSON output
 //! SSH session management (FR-1 through FR-5, FR-9 through FR-17).
 //!
-//! [`GitwaySession`] wraps a russh [`client::Handle`] and exposes the
+//! [`AnvilSession`] wraps a russh [`client::Handle`] and exposes the
 //! operations Gitway needs: connect, authenticate, exec, and close.
 //!
 //! Host-key verification is performed inside [`GitwayHandler::check_server_key`]
@@ -18,8 +18,8 @@ use russh::client;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg};
 use russh::{cipher, kex, Disconnect, Preferred};
 
-use crate::config::GitwayConfig;
-use crate::error::{GitwayError, GitwayErrorKind};
+use crate::config::AnvilConfig;
+use crate::error::{AnvilError, AnvilErrorKind};
 use crate::hostkey;
 use crate::relay;
 
@@ -41,7 +41,7 @@ struct GitwayHandler {
     /// The SHA-256 fingerprint of the server key that passed verification.
     ///
     /// Set during `check_server_key`; exposed via
-    /// [`GitwaySession::verified_fingerprint`] for structured JSON output.
+    /// [`AnvilSession::verified_fingerprint`] for structured JSON output.
     verified_fingerprint: Arc<Mutex<Option<String>>>,
 }
 
@@ -57,7 +57,7 @@ impl fmt::Debug for GitwayHandler {
 }
 
 impl client::Handler for GitwayHandler {
-    type Error = GitwayError;
+    type Error = AnvilError;
 
     async fn check_server_key(
         &mut self,
@@ -79,7 +79,7 @@ impl client::Handler for GitwayHandler {
             }
             Ok(true)
         } else {
-            Err(GitwayError::host_key_mismatch(fp))
+            Err(AnvilError::host_key_mismatch(fp))
         }
     }
 
@@ -104,16 +104,16 @@ impl client::Handler for GitwayHandler {
 /// # Typical Usage
 ///
 /// ```no_run
-/// use anvil_ssh::{GitwayConfig, GitwaySession};
+/// use anvil_ssh::{AnvilConfig, AnvilSession};
 ///
-/// # async fn doc() -> Result<(), anvil_ssh::GitwayError> {
-/// let config = GitwayConfig::github();
-/// let mut session = GitwaySession::connect(&config).await?;
+/// # async fn doc() -> Result<(), anvil_ssh::AnvilError> {
+/// let config = AnvilConfig::github();
+/// let mut session = AnvilSession::connect(&config).await?;
 /// // authenticate, exec, close…
 /// # Ok(())
 /// # }
 /// ```
-pub struct GitwaySession {
+pub struct AnvilSession {
     handle: client::Handle<GitwayHandler>,
     /// Authentication banner received from the server, if any.
     auth_banner: Arc<Mutex<Option<String>>>,
@@ -122,13 +122,13 @@ pub struct GitwaySession {
 }
 
 /// Manual Debug impl because `client::Handle<H>` does not implement `Debug`.
-impl fmt::Debug for GitwaySession {
+impl fmt::Debug for AnvilSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GitwaySession").finish_non_exhaustive()
+        f.debug_struct("AnvilSession").finish_non_exhaustive()
     }
 }
 
-impl GitwaySession {
+impl AnvilSession {
     // ── Construction ─────────────────────────────────────────────────────────
 
     /// Establishes a TCP connection to the host in `config` and completes the
@@ -141,7 +141,7 @@ impl GitwaySession {
     ///
     /// Returns an error on network failure or if the server's host key does not
     /// match any pinned fingerprint.
-    pub async fn connect(config: &GitwayConfig) -> Result<Self, GitwayError> {
+    pub async fn connect(config: &AnvilConfig) -> Result<Self, AnvilError> {
         let russh_cfg = Arc::new(build_russh_config(config.inactivity_timeout));
         let fingerprints =
             hostkey::fingerprints_for_host(&config.host, &config.custom_known_hosts)?;
@@ -179,13 +179,13 @@ impl GitwaySession {
     /// # Errors
     ///
     /// Returns an error on SSH protocol failures.  Returns
-    /// [`GitwayError::is_authentication_failed`] when the server accepts the
+    /// [`AnvilError::is_authentication_failed`] when the server accepts the
     /// exchange but rejects the key.
     pub async fn authenticate(
         &mut self,
         username: &str,
         key: PrivateKeyWithHashAlg,
-    ) -> Result<(), GitwayError> {
+    ) -> Result<(), AnvilError> {
         log::debug!("session: authenticating as {username}");
 
         let result = self.handle.authenticate_publickey(username, key).await?;
@@ -194,7 +194,7 @@ impl GitwaySession {
             log::debug!("session: authentication succeeded for {username}");
             Ok(())
         } else {
-            Err(GitwayError::authentication_failed())
+            Err(AnvilError::authentication_failed())
         }
     }
 
@@ -215,7 +215,7 @@ impl GitwaySession {
         username: &str,
         key: russh::keys::PrivateKey,
         cert: russh::keys::Certificate,
-    ) -> Result<(), GitwayError> {
+    ) -> Result<(), AnvilError> {
         log::debug!("session: authenticating as {username} with OpenSSH certificate");
 
         let result = self
@@ -227,7 +227,7 @@ impl GitwaySession {
             log::debug!("session: certificate authentication succeeded for {username}");
             Ok(())
         } else {
-            Err(GitwayError::authentication_failed())
+            Err(AnvilError::authentication_failed())
         }
     }
 
@@ -243,15 +243,15 @@ impl GitwaySession {
     /// for file-based keys.
     ///
     /// When the chosen key requires a passphrase this method returns an error
-    /// whose [`is_key_encrypted`](GitwayError::is_key_encrypted) predicate is
+    /// whose [`is_key_encrypted`](AnvilError::is_key_encrypted) predicate is
     /// `true`; the caller (CLI layer) should then prompt and call
     /// [`authenticate_with_passphrase`](Self::authenticate_with_passphrase).
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError::is_no_key_found`] when no key is available via
+    /// Returns [`AnvilError::is_no_key_found`] when no key is available via
     /// any discovery method.
-    pub async fn authenticate_best(&mut self, config: &GitwayConfig) -> Result<(), GitwayError> {
+    pub async fn authenticate_best(&mut self, config: &AnvilConfig) -> Result<(), AnvilError> {
         use crate::auth::{find_identity, wrap_key, IdentityResolution};
 
         let resolution = find_identity(config)?;
@@ -285,7 +285,7 @@ impl GitwaySession {
                         }
                     }
                 }
-                return Err(GitwayError::new(GitwayErrorKind::Keys(
+                return Err(AnvilError::new(AnvilErrorKind::Keys(
                     russh::keys::Error::KeyIsEncrypted,
                 )));
             }
@@ -307,7 +307,7 @@ impl GitwaySession {
         // This branch is only reached when we must still try a key via wrap_key
         // after exhausting the above — currently unused, but kept for clarity.
         let _ = wrap_key; // suppress unused-import warning on non-Unix builds
-        Err(GitwayError::no_key_found())
+        Err(AnvilError::no_key_found())
     }
 
     /// Loads an encrypted key with `passphrase` and authenticates.
@@ -323,10 +323,10 @@ impl GitwaySession {
     /// Returns an error if the passphrase is wrong or authentication fails.
     pub async fn authenticate_with_passphrase(
         &mut self,
-        config: &GitwayConfig,
+        config: &AnvilConfig,
         path: &std::path::Path,
         passphrase: &str,
-    ) -> Result<(), GitwayError> {
+    ) -> Result<(), AnvilError> {
         use crate::auth::load_encrypted_key;
 
         let key = load_encrypted_key(path, passphrase)?;
@@ -343,14 +343,14 @@ impl GitwaySession {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError::is_authentication_failed`] if all identities are
-    /// rejected, or [`GitwayError::is_no_key_found`] if the agent was empty.
+    /// Returns [`AnvilError::is_authentication_failed`] if all identities are
+    /// rejected, or [`AnvilError::is_no_key_found`] if the agent was empty.
     #[cfg(unix)]
     pub async fn authenticate_with_agent(
         &mut self,
         username: &str,
         mut conn: crate::auth::AgentConnection,
-    ) -> Result<(), GitwayError> {
+    ) -> Result<(), AnvilError> {
         use russh::keys::agent::AgentIdentity;
 
         for identity in conn.identities.clone() {
@@ -374,7 +374,7 @@ impl GitwaySession {
                             &mut conn.client,
                         )
                         .await
-                        .map_err(GitwayError::from)
+                        .map_err(AnvilError::from)
                 }
                 AgentIdentity::Certificate { certificate, .. } => self
                     .handle
@@ -385,7 +385,7 @@ impl GitwaySession {
                         &mut conn.client,
                     )
                     .await
-                    .map_err(GitwayError::from),
+                    .map_err(AnvilError::from),
             };
 
             match result? {
@@ -399,7 +399,7 @@ impl GitwaySession {
             }
         }
 
-        Err(GitwayError::no_key_found())
+        Err(AnvilError::no_key_found())
     }
 
     // ── Exec / relay ──────────────────────────────────────────────────────────
@@ -413,7 +413,7 @@ impl GitwaySession {
     /// # Errors
     ///
     /// Returns an error on channel open failure or SSH protocol errors.
-    pub async fn exec(&mut self, command: &str) -> Result<u32, GitwayError> {
+    pub async fn exec(&mut self, command: &str) -> Result<u32, AnvilError> {
         log::debug!("session: opening exec channel for '{command}'");
 
         let channel = self.handle.channel_open_session().await?;
@@ -433,7 +433,7 @@ impl GitwaySession {
     /// # Errors
     ///
     /// Returns an error if the disconnect message cannot be sent.
-    pub async fn close(self) -> Result<(), GitwayError> {
+    pub async fn close(self) -> Result<(), AnvilError> {
         self.handle
             .disconnect(Disconnect::ByApplication, "", "English")
             .await?;
@@ -480,9 +480,9 @@ impl GitwaySession {
     /// is set (FR-12), otherwise plain public-key auth (FR-11).
     async fn auth_key_or_cert(
         &mut self,
-        config: &GitwayConfig,
+        config: &AnvilConfig,
         key: russh::keys::PrivateKey,
-    ) -> Result<(), GitwayError> {
+    ) -> Result<(), AnvilError> {
         use crate::auth::{load_cert, wrap_key};
 
         if let Some(ref cert_path) = config.cert_file {

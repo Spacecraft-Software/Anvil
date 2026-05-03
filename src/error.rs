@@ -6,9 +6,9 @@
 //! # Examples
 //!
 //! ```rust
-//! use anvil_ssh::GitwayError;
+//! use anvil_ssh::AnvilError;
 //!
-//! fn handle(err: &GitwayError) {
+//! fn handle(err: &AnvilError) {
 //!     if err.is_host_key_mismatch() {
 //!         eprintln!("Possible MITM — host key does not match pinned fingerprints.");
 //!     }
@@ -20,11 +20,11 @@ use std::fmt;
 
 // ── Inner error kind ──────────────────────────────────────────────────────────
 
-/// Internal discriminant for [`GitwayError`].
+/// Internal discriminant for [`AnvilError`].
 ///
 /// Not part of the public API; callers use the `is_*` predicate methods.
 #[derive(Debug)]
-pub(crate) enum GitwayErrorKind {
+pub(crate) enum AnvilErrorKind {
     /// Underlying I/O failure.
     Io(std::io::Error),
     /// russh protocol-level error.
@@ -48,7 +48,7 @@ pub(crate) enum GitwayErrorKind {
     SignatureInvalid { reason: String },
 }
 
-impl fmt::Display for GitwayErrorKind {
+impl fmt::Display for AnvilErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "I/O error: {e}"),
@@ -87,17 +87,17 @@ impl fmt::Display for GitwayErrorKind {
 ///
 /// | Method | Condition |
 /// |---|---|
-/// | [`is_io`](GitwayError::is_io) | Underlying I/O failure |
-/// | [`is_host_key_mismatch`](GitwayError::is_host_key_mismatch) | Server key does not match pinned fingerprints |
-/// | [`is_authentication_failed`](GitwayError::is_authentication_failed) | Server rejected our key |
-/// | [`is_no_key_found`](GitwayError::is_no_key_found) | No identity key available |
-/// | [`is_key_encrypted`](GitwayError::is_key_encrypted) | Key file needs a passphrase |
+/// | [`is_io`](AnvilError::is_io) | Underlying I/O failure |
+/// | [`is_host_key_mismatch`](AnvilError::is_host_key_mismatch) | Server key does not match pinned fingerprints |
+/// | [`is_authentication_failed`](AnvilError::is_authentication_failed) | Server rejected our key |
+/// | [`is_no_key_found`](AnvilError::is_no_key_found) | No identity key available |
+/// | [`is_key_encrypted`](AnvilError::is_key_encrypted) | Key file needs a passphrase |
 #[derive(Debug)]
-pub struct GitwayError {
-    kind: GitwayErrorKind,
-    /// Optional per-instance hint override.  When set, [`hint`](GitwayError::hint)
+pub struct AnvilError {
+    kind: AnvilErrorKind,
+    /// Optional per-instance hint override.  When set, [`hint`](AnvilError::hint)
     /// returns this string instead of the static default chosen from
-    /// [`GitwayErrorKind`].
+    /// [`AnvilErrorKind`].
     ///
     /// Context-specific hints fire much more precisely than the kind-level
     /// defaults: an `InvalidConfig` error from the `-E` flag parser can
@@ -108,9 +108,9 @@ pub struct GitwayError {
     backtrace: Backtrace,
 }
 
-impl GitwayError {
-    /// Constructs a new [`GitwayError`] capturing the current backtrace.
-    pub(crate) fn new(kind: GitwayErrorKind) -> Self {
+impl AnvilError {
+    /// Constructs a new [`AnvilError`] capturing the current backtrace.
+    pub(crate) fn new(kind: AnvilErrorKind) -> Self {
         Self {
             kind,
             custom_hint: None,
@@ -119,7 +119,7 @@ impl GitwayError {
     }
 
     /// Attaches a context-specific hint that supersedes the kind-level
-    /// default returned by [`hint`](GitwayError::hint).
+    /// default returned by [`hint`](AnvilError::hint).
     ///
     /// Use this at call sites where the caller knows exactly what the
     /// user should do next — much more useful than a generic "run
@@ -128,9 +128,9 @@ impl GitwayError {
     /// # Example
     ///
     /// ```rust
-    /// use anvil_ssh::GitwayError;
+    /// use anvil_ssh::AnvilError;
     ///
-    /// let e = GitwayError::invalid_config("no such host: github.com.invalid")
+    /// let e = AnvilError::invalid_config("no such host: github.com.invalid")
     ///     .with_hint("Check the hostname for typos, or run `gitway --test <host>` to confirm reachability");
     /// assert!(e.hint().contains("typos"));
     /// ```
@@ -143,23 +143,23 @@ impl GitwayError {
     // ── Constructors for common variants ─────────────────────────────────────
 
     pub fn host_key_mismatch(fingerprint: impl Into<String>) -> Self {
-        Self::new(GitwayErrorKind::HostKeyMismatch {
+        Self::new(AnvilErrorKind::HostKeyMismatch {
             fingerprint: fingerprint.into(),
         })
     }
 
     #[must_use]
     pub fn authentication_failed() -> Self {
-        Self::new(GitwayErrorKind::AuthenticationFailed)
+        Self::new(AnvilErrorKind::AuthenticationFailed)
     }
 
     #[must_use]
     pub fn no_key_found() -> Self {
-        Self::new(GitwayErrorKind::NoKeyFound)
+        Self::new(AnvilErrorKind::NoKeyFound)
     }
 
     pub fn invalid_config(message: impl Into<String>) -> Self {
-        Self::new(GitwayErrorKind::InvalidConfig {
+        Self::new(AnvilErrorKind::InvalidConfig {
             message: message.into(),
         })
     }
@@ -168,7 +168,7 @@ impl GitwayError {
     ///
     /// Mapped to exit code 1 (`GENERAL_ERROR`).
     pub fn signing(message: impl Into<String>) -> Self {
-        Self::new(GitwayErrorKind::Signing {
+        Self::new(AnvilErrorKind::Signing {
             message: message.into(),
         })
     }
@@ -178,7 +178,7 @@ impl GitwayError {
     /// Mapped to exit code 4 (`PERMISSION_DENIED`) to match git's treatment
     /// of a non-zero `ssh-keygen -Y verify` as an authentication-class failure.
     pub fn signature_invalid(reason: impl Into<String>) -> Self {
-        Self::new(GitwayErrorKind::SignatureInvalid {
+        Self::new(AnvilErrorKind::SignatureInvalid {
             reason: reason.into(),
         })
     }
@@ -188,25 +188,25 @@ impl GitwayError {
     /// Returns `true` if this error originated from an I/O failure.
     #[must_use]
     pub fn is_io(&self) -> bool {
-        matches!(self.kind, GitwayErrorKind::Io(_))
+        matches!(self.kind, AnvilErrorKind::Io(_))
     }
 
     /// Returns `true` if the server's host key did not match any pinned fingerprint.
     #[must_use]
     pub fn is_host_key_mismatch(&self) -> bool {
-        matches!(self.kind, GitwayErrorKind::HostKeyMismatch { .. })
+        matches!(self.kind, AnvilErrorKind::HostKeyMismatch { .. })
     }
 
     /// Returns `true` if the server rejected our public-key authentication attempt.
     #[must_use]
     pub fn is_authentication_failed(&self) -> bool {
-        matches!(self.kind, GitwayErrorKind::AuthenticationFailed)
+        matches!(self.kind, AnvilErrorKind::AuthenticationFailed)
     }
 
     /// Returns `true` if no usable identity key was found.
     #[must_use]
     pub fn is_no_key_found(&self) -> bool {
-        matches!(self.kind, GitwayErrorKind::NoKeyFound)
+        matches!(self.kind, AnvilErrorKind::NoKeyFound)
     }
 
     /// Returns `true` if a key file was found but requires a passphrase to decrypt.
@@ -214,7 +214,7 @@ impl GitwayError {
     pub fn is_key_encrypted(&self) -> bool {
         matches!(
             self.kind,
-            GitwayErrorKind::Keys(russh::keys::Error::KeyIsEncrypted)
+            AnvilErrorKind::Keys(russh::keys::Error::KeyIsEncrypted)
         )
     }
 
@@ -222,7 +222,7 @@ impl GitwayError {
     #[must_use]
     pub fn fingerprint(&self) -> Option<&str> {
         match &self.kind {
-            GitwayErrorKind::HostKeyMismatch { fingerprint } => Some(fingerprint),
+            AnvilErrorKind::HostKeyMismatch { fingerprint } => Some(fingerprint),
             _ => None,
         }
     }
@@ -238,15 +238,15 @@ impl GitwayError {
     #[must_use]
     pub fn error_code(&self) -> &'static str {
         match &self.kind {
-            GitwayErrorKind::InvalidConfig { .. } => "USAGE_ERROR",
-            GitwayErrorKind::NoKeyFound => "NOT_FOUND",
-            GitwayErrorKind::HostKeyMismatch { .. }
-            | GitwayErrorKind::AuthenticationFailed
-            | GitwayErrorKind::SignatureInvalid { .. } => "PERMISSION_DENIED",
-            GitwayErrorKind::Io(_)
-            | GitwayErrorKind::Ssh(_)
-            | GitwayErrorKind::Keys(_)
-            | GitwayErrorKind::Signing { .. } => "GENERAL_ERROR",
+            AnvilErrorKind::InvalidConfig { .. } => "USAGE_ERROR",
+            AnvilErrorKind::NoKeyFound => "NOT_FOUND",
+            AnvilErrorKind::HostKeyMismatch { .. }
+            | AnvilErrorKind::AuthenticationFailed
+            | AnvilErrorKind::SignatureInvalid { .. } => "PERMISSION_DENIED",
+            AnvilErrorKind::Io(_)
+            | AnvilErrorKind::Ssh(_)
+            | AnvilErrorKind::Keys(_)
+            | AnvilErrorKind::Signing { .. } => "GENERAL_ERROR",
         }
     }
 
@@ -261,15 +261,15 @@ impl GitwayError {
     #[must_use]
     pub fn exit_code(&self) -> u32 {
         match &self.kind {
-            GitwayErrorKind::InvalidConfig { .. } => 2,
-            GitwayErrorKind::NoKeyFound => 3,
-            GitwayErrorKind::HostKeyMismatch { .. }
-            | GitwayErrorKind::AuthenticationFailed
-            | GitwayErrorKind::SignatureInvalid { .. } => 4,
-            GitwayErrorKind::Io(_)
-            | GitwayErrorKind::Ssh(_)
-            | GitwayErrorKind::Keys(_)
-            | GitwayErrorKind::Signing { .. } => 1,
+            AnvilErrorKind::InvalidConfig { .. } => 2,
+            AnvilErrorKind::NoKeyFound => 3,
+            AnvilErrorKind::HostKeyMismatch { .. }
+            | AnvilErrorKind::AuthenticationFailed
+            | AnvilErrorKind::SignatureInvalid { .. } => 4,
+            AnvilErrorKind::Io(_)
+            | AnvilErrorKind::Ssh(_)
+            | AnvilErrorKind::Keys(_)
+            | AnvilErrorKind::Signing { .. } => 1,
         }
     }
 
@@ -289,40 +289,40 @@ impl GitwayError {
             return h;
         }
         match &self.kind {
-            GitwayErrorKind::HostKeyMismatch { .. } => {
+            AnvilErrorKind::HostKeyMismatch { .. } => {
                 "The server's SSH fingerprint doesn't match what gitway trusts. \
                  This is either a routine key rotation by the provider or a \
                  possible man-in-the-middle attack. Compare the received \
                  fingerprint against the provider's official list; if you \
                  trust it, add it to ~/.config/gitway/known_hosts."
             }
-            GitwayErrorKind::AuthenticationFailed => {
+            AnvilErrorKind::AuthenticationFailed => {
                 "The server rejected your SSH key. Two things to check: the \
                  public key is registered in the provider's account settings, \
                  and the private key is loaded (run `gitway-add ~/.ssh/id_ed25519`)."
             }
-            GitwayErrorKind::NoKeyFound => {
+            AnvilErrorKind::NoKeyFound => {
                 "No SSH key was found. Generate one with `gitway keygen ed25519 \
                  --out ~/.ssh/id_ed25519`, or point gitway at an existing key \
                  via `--identity <path>`."
             }
-            GitwayErrorKind::InvalidConfig { .. } => {
+            AnvilErrorKind::InvalidConfig { .. } => {
                 "Something in your command or config is off. Run `gitway --help` \
                  to see accepted flags, or re-read the error message above — \
                  it usually names the exact argument to fix."
             }
-            GitwayErrorKind::Signing { .. } => {
+            AnvilErrorKind::Signing { .. } => {
                 "Signing the commit failed. If the key is encrypted, either \
                  load it into the agent (`gitway-add <key>`) so signing can \
                  use it without a passphrase, or set SSH_ASKPASS to a GUI \
                  helper so you can type the passphrase in a dialog."
             }
-            GitwayErrorKind::SignatureInvalid { .. } => {
+            AnvilErrorKind::SignatureInvalid { .. } => {
                 "The signature doesn't match. Either the signed data was \
                  changed after signing, a different key produced it, or the \
                  namespace (usually `git`) is different."
             }
-            GitwayErrorKind::Io(_) | GitwayErrorKind::Ssh(_) | GitwayErrorKind::Keys(_) => {
+            AnvilErrorKind::Io(_) | AnvilErrorKind::Ssh(_) | AnvilErrorKind::Keys(_) => {
                 "Something broke before the SSH session was fully set up. \
                  Run `gitway --test --verbose <host>` to see where it fails."
             }
@@ -332,7 +332,7 @@ impl GitwayError {
 
 // ── Trait implementations ─────────────────────────────────────────────────────
 
-impl fmt::Display for GitwayError {
+impl fmt::Display for AnvilError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.kind)?;
         let bt = self.backtrace.to_string();
@@ -343,42 +343,42 @@ impl fmt::Display for GitwayError {
     }
 }
 
-impl std::error::Error for GitwayError {
+impl std::error::Error for AnvilError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.kind {
-            GitwayErrorKind::Io(e) => Some(e),
-            GitwayErrorKind::Ssh(e) => Some(e),
-            GitwayErrorKind::Keys(e) => Some(e),
+            AnvilErrorKind::Io(e) => Some(e),
+            AnvilErrorKind::Ssh(e) => Some(e),
+            AnvilErrorKind::Keys(e) => Some(e),
             _ => None,
         }
     }
 }
 
-impl From<russh::Error> for GitwayError {
+impl From<russh::Error> for AnvilError {
     fn from(e: russh::Error) -> Self {
-        Self::new(GitwayErrorKind::Ssh(e))
+        Self::new(AnvilErrorKind::Ssh(e))
     }
 }
 
-impl From<russh::keys::Error> for GitwayError {
+impl From<russh::keys::Error> for AnvilError {
     fn from(e: russh::keys::Error) -> Self {
-        Self::new(GitwayErrorKind::Keys(e))
+        Self::new(AnvilErrorKind::Keys(e))
     }
 }
 
-impl From<std::io::Error> for GitwayError {
+impl From<std::io::Error> for AnvilError {
     fn from(e: std::io::Error) -> Self {
-        Self::new(GitwayErrorKind::Io(e))
+        Self::new(AnvilErrorKind::Io(e))
     }
 }
 
-impl From<russh::AgentAuthError> for GitwayError {
+impl From<russh::AgentAuthError> for AnvilError {
     fn from(e: russh::AgentAuthError) -> Self {
         match e {
             russh::AgentAuthError::Send(_) => {
-                Self::new(GitwayErrorKind::Ssh(russh::Error::SendError))
+                Self::new(AnvilErrorKind::Ssh(russh::Error::SendError))
             }
-            russh::AgentAuthError::Key(k) => Self::new(GitwayErrorKind::Keys(k)),
+            russh::AgentAuthError::Key(k) => Self::new(AnvilErrorKind::Keys(k)),
         }
     }
 }

@@ -83,9 +83,9 @@ The `ssh-key` RustCrypto stack (`ed25519-dalek` 2.x, `rsa` 0.9, `p256`/`p384`/`p
 
 ## Type rename roadmap
 
-- `v0.1.x` — types stay `GitwaySession` / `GitwayConfig` / `GitwayError`.  Doc-comments and `use` paths reference `anvil_ssh::` (Rust module path), but the type names retain their `Gitway*` prefix.
-- `v0.2.0` — rename types to `Anvil*` with `#[deprecated]` aliases for one major version.
-- `v1.0.0` — stabilization (concurrent with Gitway 1.0.0).
+- `v0.1.x` — types carried over from the source crate as `GitwaySession` / `GitwayConfig` / `GitwayError` (lift-and-shift extraction; only the crate name changed).
+- `v0.2.0` (current) — types renamed to `AnvilSession` / `AnvilConfig` / `AnvilError`. Legacy `Gitway*` names retained as `#[deprecated]` re-exports at the crate root.
+- `v1.0.0` — stabilization (concurrent with Gitway 1.0.0). Deprecated `Gitway*` aliases removed.
 
 ## Related
 

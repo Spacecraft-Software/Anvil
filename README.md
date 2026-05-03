@@ -16,12 +16,12 @@ anvil-ssh = "0.1"
 ```
 
 ```rust,no_run
-use anvil_ssh::{GitwayConfig, GitwaySession};
+use anvil_ssh::{AnvilConfig, AnvilSession};
 
 #[tokio::main]
-async fn main() -> Result<(), anvil_ssh::GitwayError> {
-    let config = GitwayConfig::github();
-    let mut session = GitwaySession::connect(&config).await?;
+async fn main() -> Result<(), anvil_ssh::AnvilError> {
+    let config = AnvilConfig::github();
+    let mut session = AnvilSession::connect(&config).await?;
     session.authenticate_best(&config).await?;
     let exit_code = session.exec("git-upload-pack 'steelbore/gitway.git'").await?;
     session.close().await?;
@@ -29,7 +29,7 @@ async fn main() -> Result<(), anvil_ssh::GitwayError> {
 }
 ```
 
-The type names (`GitwaySession`, `GitwayConfig`, `GitwayError`) are inherited from the source crate. They will be renamed to `AnvilSession` / `AnvilConfig` / `AnvilError` in `0.2.0` with `#[deprecated]` aliases for one major version.
+The flat re-exports `AnvilSession` / `AnvilConfig` / `AnvilError` were renamed in `0.2.0` from the legacy `GitwaySession` / `GitwayConfig` / `GitwayError` (which were carried over from the source crate to keep the 0.1.0 extraction zero-rename). The legacy names remain available as `#[deprecated]` re-exports for one major version per [Gitway PRD §7.4](https://github.com/steelbore/gitway/blob/main/Gitway-PRD-v1.0.md); they will be removed in `1.0.0`. Migration is mechanical — `s/Gitway/Anvil/g` in your `use anvil_ssh::*;` imports.
 
 ## Modules
 

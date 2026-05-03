@@ -43,7 +43,7 @@ use std::path::Path;
 
 use ssh_key::PublicKey;
 
-use crate::GitwayError;
+use crate::AnvilError;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -77,8 +77,8 @@ impl AllowedSigners {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError`] on the first malformed line.
-    pub fn parse(input: &str) -> Result<Self, GitwayError> {
+    /// Returns [`AnvilError`] on the first malformed line.
+    pub fn parse(input: &str) -> Result<Self, AnvilError> {
         let mut entries = Vec::new();
         for (lineno, raw) in input.lines().enumerate() {
             let line = raw.trim();
@@ -86,7 +86,7 @@ impl AllowedSigners {
                 continue;
             }
             let entry = parse_line(line).map_err(|msg| {
-                GitwayError::invalid_config(format!("allowed_signers line {}: {msg}", lineno + 1))
+                AnvilError::invalid_config(format!("allowed_signers line {}: {msg}", lineno + 1))
             })?;
             entries.push(entry);
         }
@@ -97,9 +97,9 @@ impl AllowedSigners {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError`] if the file cannot be read or contains
+    /// Returns [`AnvilError`] if the file cannot be read or contains
     /// malformed lines.
-    pub fn load(path: &Path) -> Result<Self, GitwayError> {
+    pub fn load(path: &Path) -> Result<Self, AnvilError> {
         let contents = fs::read_to_string(path)?;
         Self::parse(&contents)
     }

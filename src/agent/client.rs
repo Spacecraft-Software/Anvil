@@ -28,14 +28,14 @@
 //!
 //! let mut agent = Agent::from_env()?;
 //! agent.list()?.iter().for_each(|id| println!("{}", id.fingerprint));
-//! # Ok::<(), anvil_ssh::GitwayError>(())
+//! # Ok::<(), anvil_ssh::AnvilError>(())
 //! ```
 //!
 //! # Errors
 //!
-//! Every operation returns [`GitwayError`]. Agent-protocol failures and
+//! Every operation returns [`AnvilError`]. Agent-protocol failures and
 //! I/O failures are both folded into the `Io` variant with a descriptive
-//! message; callers that care can match via [`GitwayError::is_io`].
+//! message; callers that care can match via [`AnvilError::is_io`].
 //!
 //! # Zeroization
 //!
@@ -56,7 +56,7 @@ use ssh_agent_lib::proto::{
 use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey, Signature};
 use zeroize::Zeroizing;
 
-use crate::GitwayError;
+use crate::AnvilError;
 
 // ── Transport abstraction ─────────────────────────────────────────────────────
 //
@@ -105,7 +105,7 @@ pub struct Identity {
 /// Handle to a running SSH agent.
 ///
 /// Thin wrapper over [`ssh_agent_lib::blocking::Client`] that translates
-/// its error type into [`GitwayError`] and the protocol structs into
+/// its error type into [`AnvilError`] and the protocol structs into
 /// more convenient Gitway types.
 #[derive(Debug)]
 pub struct Agent {
@@ -117,12 +117,12 @@ impl Agent {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError::invalid_config`] when `$SSH_AUTH_SOCK` is
-    /// unset or empty, and [`GitwayError::from`] an I/O error when the
+    /// Returns [`AnvilError::invalid_config`] when `$SSH_AUTH_SOCK` is
+    /// unset or empty, and [`AnvilError::from`] an I/O error when the
     /// socket cannot be opened.
-    pub fn from_env() -> Result<Self, GitwayError> {
+    pub fn from_env() -> Result<Self, AnvilError> {
         let sock = env::var("SSH_AUTH_SOCK").map_err(|_e| {
-            GitwayError::invalid_config("SSH_AUTH_SOCK is not set").with_hint(
+            AnvilError::invalid_config("SSH_AUTH_SOCK is not set").with_hint(
                 "No SSH agent is advertised in this shell. Start one with \
                  `gitway agent start -s` and eval the output, or enable the \
                  bundled systemd user unit (`systemctl --user enable --now \
@@ -134,7 +134,7 @@ impl Agent {
         })?;
         if sock.is_empty() {
             return Err(
-                GitwayError::invalid_config("SSH_AUTH_SOCK is empty").with_hint(
+                AnvilError::invalid_config("SSH_AUTH_SOCK is empty").with_hint(
                     "Something cleared `SSH_AUTH_SOCK` to the empty string. \
                  Unset it (`unset SSH_AUTH_SOCK`) and re-export it to a \
                  real socket path, or just restart the shell.",
@@ -148,9 +148,9 @@ impl Agent {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError::from`] the underlying I/O error when the
+    /// Returns [`AnvilError::from`] the underlying I/O error when the
     /// socket cannot be opened.
-    pub fn connect(path: &std::path::Path) -> Result<Self, GitwayError> {
+    pub fn connect(path: &std::path::Path) -> Result<Self, AnvilError> {
         let stream = open_transport(path)?;
         Ok(Self {
             inner: Client::new(stream),
@@ -161,8 +161,8 @@ impl Agent {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError`] on agent protocol or I/O failure.
-    pub fn list(&mut self) -> Result<Vec<Identity>, GitwayError> {
+    /// Returns [`AnvilError`] on agent protocol or I/O failure.
+    pub fn list(&mut self) -> Result<Vec<Identity>, AnvilError> {
         let raw = self
             .inner
             .request_identities()
@@ -189,13 +189,13 @@ impl Agent {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError`] on agent protocol or I/O failure.
+    /// Returns [`AnvilError`] on agent protocol or I/O failure.
     pub fn add(
         &mut self,
         key: &PrivateKey,
         lifetime: Option<Duration>,
         confirm: bool,
-    ) -> Result<(), GitwayError> {
+    ) -> Result<(), AnvilError> {
         let identity = AddIdentity {
             credential: Credential::Key {
                 privkey: key.key_data().clone(),
@@ -211,7 +211,7 @@ impl Agent {
         let mut constraints: Vec<KeyConstraint> = Vec::with_capacity(2);
         if let Some(d) = lifetime {
             let secs = u32::try_from(d.as_secs())
-                .map_err(|_e| GitwayError::invalid_config("lifetime exceeds u32 seconds"))?;
+                .map_err(|_e| AnvilError::invalid_config("lifetime exceeds u32 seconds"))?;
             constraints.push(KeyConstraint::Lifetime(secs));
         }
         if confirm {
@@ -230,9 +230,9 @@ impl Agent {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError`] when the agent rejects the request (e.g.
+    /// Returns [`AnvilError`] when the agent rejects the request (e.g.
     /// identity not loaded) or on I/O failure.
-    pub fn remove(&mut self, public_key: &PublicKey) -> Result<(), GitwayError> {
+    pub fn remove(&mut self, public_key: &PublicKey) -> Result<(), AnvilError> {
         self.inner
             .remove_identity(RemoveIdentity {
                 pubkey: public_key.key_data().clone(),
@@ -244,8 +244,8 @@ impl Agent {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError`] on agent protocol or I/O failure.
-    pub fn remove_all(&mut self) -> Result<(), GitwayError> {
+    /// Returns [`AnvilError`] on agent protocol or I/O failure.
+    pub fn remove_all(&mut self) -> Result<(), AnvilError> {
         self.inner
             .remove_all_identities()
             .map_err(|e| io_err(format!("agent remove-all failed: {e}")))
@@ -258,11 +258,11 @@ impl Agent {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError`] when the agent rejects the passphrase or
+    /// Returns [`AnvilError`] when the agent rejects the passphrase or
     /// on I/O failure. The passphrase string passed through to
     /// `ssh-agent-lib` is a fresh `String` derived from `passphrase`; the
     /// caller's [`Zeroizing`] buffer is not moved.
-    pub fn lock(&mut self, passphrase: &Zeroizing<String>) -> Result<(), GitwayError> {
+    pub fn lock(&mut self, passphrase: &Zeroizing<String>) -> Result<(), AnvilError> {
         self.inner
             .lock(passphrase.as_str().to_owned())
             .map_err(|e| io_err(format!("agent lock failed: {e}")))
@@ -272,9 +272,9 @@ impl Agent {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError`] when the agent rejects the passphrase or
+    /// Returns [`AnvilError`] when the agent rejects the passphrase or
     /// on I/O failure.
-    pub fn unlock(&mut self, passphrase: &Zeroizing<String>) -> Result<(), GitwayError> {
+    pub fn unlock(&mut self, passphrase: &Zeroizing<String>) -> Result<(), AnvilError> {
         self.inner
             .unlock(passphrase.as_str().to_owned())
             .map_err(|e| io_err(format!("agent unlock failed: {e}")))
@@ -296,10 +296,10 @@ impl Agent {
     ///
     /// # Errors
     ///
-    /// Returns [`GitwayError`] when the agent rejects the request
+    /// Returns [`AnvilError`] when the agent rejects the request
     /// (commonly because the key is not loaded, the agent is locked,
     /// or a `--confirm` prompt was denied) or on I/O failure.
-    pub fn sign(&mut self, public_key: &PublicKey, data: &[u8]) -> Result<Signature, GitwayError> {
+    pub fn sign(&mut self, public_key: &PublicKey, data: &[u8]) -> Result<Signature, AnvilError> {
         let flags: u32 = match public_key.algorithm() {
             Algorithm::Rsa { .. } => 4, // SSH_AGENT_RSA_SHA2_512
             _ => 0,
@@ -316,8 +316,8 @@ impl Agent {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-/// Convert any display-able error into a `GitwayError` with an
+/// Convert any display-able error into a `AnvilError` with an
 /// `std::io::Error` source carrying `message`.
-fn io_err(message: String) -> GitwayError {
-    GitwayError::from(std::io::Error::other(message))
+fn io_err(message: String) -> AnvilError {
+    AnvilError::from(std::io::Error::other(message))
 }

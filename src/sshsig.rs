@@ -34,7 +34,7 @@ use ssh_key::{HashAlg, LineEnding, PrivateKey, PublicKey, SshSig};
 
 use crate::agent::client::Agent;
 use crate::allowed_signers::AllowedSigners;
-use crate::GitwayError;
+use crate::AnvilError;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -59,20 +59,20 @@ pub struct Verified {
 ///
 /// # Errors
 ///
-/// Returns [`GitwayError::signing`] on I/O or cryptographic failure. If `key`
+/// Returns [`AnvilError::signing`] on I/O or cryptographic failure. If `key`
 /// is encrypted, decrypt it before calling this function.
 pub fn sign<R: Read>(
     data: &mut R,
     key: &PrivateKey,
     namespace: &str,
     hash: HashAlg,
-) -> Result<String, GitwayError> {
+) -> Result<String, AnvilError> {
     let mut buf = Vec::new();
     data.read_to_end(&mut buf)?;
     let sig = SshSig::sign(key, namespace, hash, &buf)
-        .map_err(|e| GitwayError::signing(format!("sshsig sign failed: {e}")))?;
+        .map_err(|e| AnvilError::signing(format!("sshsig sign failed: {e}")))?;
     sig.to_pem(LineEnding::LF)
-        .map_err(|e| GitwayError::signing(format!("sshsig armor failed: {e}")))
+        .map_err(|e| AnvilError::signing(format!("sshsig armor failed: {e}")))
 }
 
 /// Signs via an SSH agent, producing the same armored SSHSIG string as
@@ -85,7 +85,7 @@ pub fn sign<R: Read>(
 ///
 /// # Errors
 ///
-/// Returns [`GitwayError::signing`] on agent or cryptographic failure.
+/// Returns [`AnvilError::signing`] on agent or cryptographic failure.
 /// If the agent does not hold the matching private key, the error comes
 /// from the agent side and callers typically want to fall back to the
 /// [`sign`] path.
@@ -95,16 +95,16 @@ pub fn sign_with_agent<R: Read>(
     public_key: &PublicKey,
     namespace: &str,
     hash: HashAlg,
-) -> Result<String, GitwayError> {
+) -> Result<String, AnvilError> {
     let mut buf = Vec::new();
     data.read_to_end(&mut buf)?;
     let signed_blob = SshSig::signed_data(namespace, hash, &buf)
-        .map_err(|e| GitwayError::signing(format!("sshsig signed_data failed: {e}")))?;
+        .map_err(|e| AnvilError::signing(format!("sshsig signed_data failed: {e}")))?;
     let signature = agent.sign(public_key, &signed_blob)?;
     let sig = SshSig::new(public_key.key_data().clone(), namespace, hash, signature)
-        .map_err(|e| GitwayError::signing(format!("sshsig wrap failed: {e}")))?;
+        .map_err(|e| AnvilError::signing(format!("sshsig wrap failed: {e}")))?;
     sig.to_pem(LineEnding::LF)
-        .map_err(|e| GitwayError::signing(format!("sshsig armor failed: {e}")))
+        .map_err(|e| AnvilError::signing(format!("sshsig armor failed: {e}")))
 }
 
 // ── Verify ────────────────────────────────────────────────────────────────────
@@ -119,19 +119,19 @@ pub fn sign_with_agent<R: Read>(
 ///
 /// # Errors
 ///
-/// Returns [`GitwayError::signature_invalid`] on any failed check.
+/// Returns [`AnvilError::signature_invalid`] on any failed check.
 pub fn verify<R: Read>(
     data: &mut R,
     armored_sig: &str,
     signer_identity: &str,
     namespace: &str,
     allowed: &AllowedSigners,
-) -> Result<Verified, GitwayError> {
+) -> Result<Verified, AnvilError> {
     let sig = SshSig::from_pem(armored_sig)
-        .map_err(|e| GitwayError::signature_invalid(format!("malformed signature: {e}")))?;
+        .map_err(|e| AnvilError::signature_invalid(format!("malformed signature: {e}")))?;
 
     if sig.namespace() != namespace {
-        return Err(GitwayError::signature_invalid(format!(
+        return Err(AnvilError::signature_invalid(format!(
             "namespace mismatch: signature is {:?}, expected {namespace:?}",
             sig.namespace()
         )));
@@ -143,10 +143,10 @@ pub fn verify<R: Read>(
     let public_key = PublicKey::from(sig.public_key().clone());
     public_key
         .verify(namespace, &buf, &sig)
-        .map_err(|e| GitwayError::signature_invalid(format!("cryptographic check failed: {e}")))?;
+        .map_err(|e| AnvilError::signature_invalid(format!("cryptographic check failed: {e}")))?;
 
     if !allowed.is_authorized(signer_identity, &public_key, namespace) {
-        return Err(GitwayError::signature_invalid(format!(
+        return Err(AnvilError::signature_invalid(format!(
             "signer {signer_identity:?} is not authorized for namespace {namespace:?} \
              with key {}",
             public_key.fingerprint(HashAlg::Sha256)
@@ -166,18 +166,18 @@ pub fn verify<R: Read>(
 ///
 /// # Errors
 ///
-/// Returns [`GitwayError::signature_invalid`] on malformed armor, namespace
+/// Returns [`AnvilError::signature_invalid`] on malformed armor, namespace
 /// mismatch, or failed cryptographic check.
 pub fn check_novalidate<R: Read>(
     data: &mut R,
     armored_sig: &str,
     namespace: &str,
-) -> Result<(), GitwayError> {
+) -> Result<(), AnvilError> {
     let sig = SshSig::from_pem(armored_sig)
-        .map_err(|e| GitwayError::signature_invalid(format!("malformed signature: {e}")))?;
+        .map_err(|e| AnvilError::signature_invalid(format!("malformed signature: {e}")))?;
 
     if sig.namespace() != namespace {
-        return Err(GitwayError::signature_invalid(format!(
+        return Err(AnvilError::signature_invalid(format!(
             "namespace mismatch: signature is {:?}, expected {namespace:?}",
             sig.namespace()
         )));
@@ -189,7 +189,7 @@ pub fn check_novalidate<R: Read>(
     let public_key = PublicKey::from(sig.public_key().clone());
     public_key
         .verify(namespace, &buf, &sig)
-        .map_err(|e| GitwayError::signature_invalid(format!("cryptographic check failed: {e}")))?;
+        .map_err(|e| AnvilError::signature_invalid(format!("cryptographic check failed: {e}")))?;
 
     Ok(())
 }
@@ -204,14 +204,14 @@ pub fn check_novalidate<R: Read>(
 ///
 /// # Errors
 ///
-/// Returns [`GitwayError::signature_invalid`] if `armored_sig` is malformed.
+/// Returns [`AnvilError::signature_invalid`] if `armored_sig` is malformed.
 pub fn find_principals(
     armored_sig: &str,
     allowed: &AllowedSigners,
     namespace: &str,
-) -> Result<Vec<String>, GitwayError> {
+) -> Result<Vec<String>, AnvilError> {
     let sig = SshSig::from_pem(armored_sig)
-        .map_err(|e| GitwayError::signature_invalid(format!("malformed signature: {e}")))?;
+        .map_err(|e| AnvilError::signature_invalid(format!("malformed signature: {e}")))?;
     let public_key = PublicKey::from(sig.public_key().clone());
     Ok(allowed
         .find_principals(&public_key, namespace)

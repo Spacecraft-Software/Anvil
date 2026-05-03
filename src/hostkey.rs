@@ -27,7 +27,7 @@
 
 use std::path::Path;
 
-use crate::error::GitwayError;
+use crate::error::AnvilError;
 
 // ── Well-known host constants ─────────────────────────────────────────────────
 
@@ -121,7 +121,7 @@ pub const CODEBERG_FINGERPRINTS: &[&str] = &[
 /// # Errors
 ///
 /// Returns an error if the file cannot be read.
-fn fingerprints_from_known_hosts(path: &Path, hostname: &str) -> Result<Vec<String>, GitwayError> {
+fn fingerprints_from_known_hosts(path: &Path, hostname: &str) -> Result<Vec<String>, AnvilError> {
     let content = std::fs::read_to_string(path)?;
     let mut fps = Vec::new();
 
@@ -166,7 +166,7 @@ fn default_known_hosts_path() -> Option<std::path::PathBuf> {
 pub fn fingerprints_for_host(
     host: &str,
     custom_path: &Option<std::path::PathBuf>,
-) -> Result<Vec<String>, GitwayError> {
+) -> Result<Vec<String>, AnvilError> {
     // Start with the embedded set for the well-known hosted services.
     let mut fps: Vec<String> = match host {
         "github.com" | "ssh.github.com" => {
@@ -196,11 +196,10 @@ pub fn fingerprints_for_host(
 
     // No fingerprints at all → refuse the connection with a clear message.
     if fps.is_empty() {
-        return Err(GitwayError::invalid_config(format!(
-            "no fingerprints known for host '{host}'"
-        ))
-        .with_hint(format!(
-            "Gitway refuses to connect to hosts whose SSH fingerprint it can't \
+        return Err(
+            AnvilError::invalid_config(format!("no fingerprints known for host '{host}'"))
+                .with_hint(format!(
+                    "Gitway refuses to connect to hosts whose SSH fingerprint it can't \
              verify (no trust-on-first-use). Either you typed the hostname \
              wrong, or this is a self-hosted server and you need to pin its \
              fingerprint: fetch it from the provider's docs (GitHub, GitLab, \
@@ -211,7 +210,8 @@ pub fn fingerprints_for_host(
              \n\
              As a last resort, re-run with --insecure-skip-host-check (not \
              recommended — this disables MITM protection)."
-        )));
+                )),
+        );
     }
 
     Ok(fps)
