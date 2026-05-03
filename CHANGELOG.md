@@ -2,6 +2,45 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-05-04
+
+### Added
+
+- **`ssh_config(5)` parser and resolver** — `anvil_ssh::ssh_config::resolve(host, paths)` returns a `ResolvedSshConfig` containing every directive from [Gitway PRD §5.8.1](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md): `HostName`, `User`, `Port`, `IdentityFile` (multi), `IdentitiesOnly`, `IdentityAgent`, `CertificateFile` (multi), `ProxyCommand`, `ProxyJump`, `UserKnownHostsFile` (multi), `StrictHostKeyChecking`, `HostKeyAlgorithms`, `KexAlgorithms`, `Ciphers`, `MACs`, `ConnectTimeout`, `ConnectionAttempts`. Per-directive provenance is preserved for `gitway diag` (NFR-24) and `gitway config show`. `Match` blocks are recognized for correct directive grouping but never match a host — full `Match` semantics are deferred to v1.1 per PRD §12 Q1.
+- New flat re-exports at the crate root: `AlgList`, `DirectiveSource`, `ResolvedSshConfig`, `SshConfigPaths`, `StrictHostKeyChecking`. The `resolve` free function lives at `anvil_ssh::ssh_config::resolve` to keep the top-level namespace uncluttered.
+- New builder method `AnvilConfigBuilder::apply_ssh_config(&ResolvedSshConfig)` layers ssh_config-derived defaults into the builder. CLI-supplied values still win — call `apply_ssh_config()` *before* CLI overrides.
+- `AnvilConfigBuilder::add_identity_file()` and `AnvilConfigBuilder::identity_files()` for the multi-key API.
+- `AnvilConfigBuilder::strict_host_key_checking(StrictHostKeyChecking)` builder method.
+- Minimal `accept-new` write path: when `StrictHostKeyChecking::AcceptNew` is set *and* `custom_known_hosts` is provided, the first-seen fingerprint of an otherwise-unknown host is recorded to that file. Without `custom_known_hosts` set the connect downgrades to `Yes` semantics with a warning. Full TOFU UX (interactive prompt, fingerprint display) is post-M12 polish.
+
+### Changed
+
+- **Breaking (with deprecated shims):** `AnvilConfig.identity_file: Option<PathBuf>` is replaced by `AnvilConfig.identity_files: Vec<PathBuf>`. OpenSSH allows multiple `IdentityFile` directives; the resolver and the auth path now honour the full list in source order. The deprecated accessor `AnvilConfig::identity_file()` returns `identity_files.first().map(PathBuf::as_path)`. The deprecated builder method `AnvilConfigBuilder::identity_file(path)` clears the list and pushes the single path.
+- **Breaking (with deprecated shims):** `AnvilConfig.skip_host_check: bool` is replaced by `AnvilConfig.strict_host_key_checking: StrictHostKeyChecking` (the OpenSSH-style enum: `Yes` / `No` / `AcceptNew`). The deprecated accessor `AnvilConfig::skip_host_check()` returns `true` iff the policy is `No`. The deprecated builder method `skip_host_check(true)` maps to `StrictHostKeyChecking::No`; `skip_host_check(false)` to `StrictHostKeyChecking::Yes`. Lossless across the two states the boolean shape encoded.
+
+### Migration (0.2.x → 0.3.0)
+
+```rust
+// 0.2.x
+let cfg = AnvilConfig::builder("example.com")
+    .identity_file("/path/to/key")
+    .skip_host_check(true)
+    .build();
+let key = cfg.identity_file.as_deref();
+let skip = cfg.skip_host_check;
+
+// 0.3.0
+use anvil_ssh::StrictHostKeyChecking;
+let cfg = AnvilConfig::builder("example.com")
+    .add_identity_file("/path/to/key")              // or .identity_files(vec![...])
+    .strict_host_key_checking(StrictHostKeyChecking::No)
+    .build();
+let key = cfg.identity_files.first().map(PathBuf::as_path);
+let no_check = matches!(cfg.strict_host_key_checking, StrictHostKeyChecking::No);
+```
+
+The deprecated 0.2.x methods continue to compile (with deprecation warnings) until they are removed in 1.0.
+
 ## [0.2.0] — 2026-05-03
 
 ### Changed
