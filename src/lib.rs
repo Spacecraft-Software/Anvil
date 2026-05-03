@@ -55,6 +55,11 @@ pub mod session;
 pub mod sshsig;
 pub mod time;
 
+// `ssh_config` lands as crate-private through M12.1-M12.3 while the
+// lexer / parser / matcher fill in.  M12.4 promotes it to `pub` and
+// adds the `resolve()` entry point.
+mod ssh_config;
+
 // ── Flat re-exports (FR-23) ───────────────────────────────────────────────────
 
 pub use config::AnvilConfig;
