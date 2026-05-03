@@ -332,8 +332,11 @@ impl AnvilConfigBuilder {
                 self.custom_known_hosts = Some(p.clone());
             }
         }
+        warn_unhonored_directives(resolved);
         self
     }
+
+    // (Unhonored-directives warning helper lives below `impl` block.)
 
     /// Finalise and return the [`AnvilConfig`].
     #[must_use]
@@ -350,6 +353,60 @@ impl AnvilConfigBuilder {
             verbose: self.verbose,
             fallback: self.fallback,
         }
+    }
+}
+
+/// Emits a single `log::warn!` listing any directives in `resolved` that
+/// the resolver successfully parsed but Anvil does not yet honor.  Called
+/// from [`AnvilConfigBuilder::apply_ssh_config`] so the warning fires
+/// when a config is actually being prepared for connection — `gitway
+/// config show` and similar inspection callers do not trigger it.
+///
+/// The split:
+/// - `HostKeyAlgorithms`, `KexAlgorithms`, `Ciphers`, `MACs` — parsed
+///   into [`ResolvedSshConfig`] for `gitway config show`, but
+///   [`crate::session::build_russh_config`] uses hardcoded preferences
+///   today.  M17 plumbs the `+`/`-`/`^` modifier semantics through to
+///   russh's preference list.
+/// - `ConnectTimeout`, `ConnectionAttempts` — parsed but not yet wired
+///   into `connect()`.  M18 honors them.
+fn warn_unhonored_directives(resolved: &ResolvedSshConfig) {
+    let mut m17: Vec<&'static str> = Vec::new();
+    if resolved.host_key_algorithms.is_some() {
+        m17.push("HostKeyAlgorithms");
+    }
+    if resolved.kex_algorithms.is_some() {
+        m17.push("KexAlgorithms");
+    }
+    if resolved.ciphers.is_some() {
+        m17.push("Ciphers");
+    }
+    if resolved.macs.is_some() {
+        m17.push("MACs");
+    }
+
+    let mut m18: Vec<&'static str> = Vec::new();
+    if resolved.connect_timeout.is_some() {
+        m18.push("ConnectTimeout");
+    }
+    if resolved.connection_attempts.is_some() {
+        m18.push("ConnectionAttempts");
+    }
+
+    if !m17.is_empty() {
+        log::warn!(
+            "ssh_config: directive(s) {} parsed but not yet honored \
+             (landing in M17 — Gitway PRD §8); current connections use \
+             Anvil's hardcoded algorithm preferences",
+            m17.join(", "),
+        );
+    }
+    if !m18.is_empty() {
+        log::warn!(
+            "ssh_config: directive(s) {} parsed but not yet honored \
+             (landing in M18 — Gitway PRD §8)",
+            m18.join(", "),
+        );
     }
 }
 
