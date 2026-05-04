@@ -191,6 +191,36 @@ impl AnvilError {
         matches!(self.kind, AnvilErrorKind::Io(_))
     }
 
+    /// Returns the underlying [`std::io::ErrorKind`] when this error
+    /// is an I/O variant, or `None` otherwise.
+    ///
+    /// Used by [`crate::retry::classify`] (M18, FR-82) to distinguish
+    /// transient connection failures (`ConnectionRefused`,
+    /// `TimedOut`, `HostUnreachable`, …) from fatal ones
+    /// (`PermissionDenied`, etc.).
+    #[must_use]
+    pub fn io_kind(&self) -> Option<std::io::ErrorKind> {
+        match &self.kind {
+            AnvilErrorKind::Io(e) => Some(e.kind()),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` when this error is classified as transient by
+    /// [`crate::retry::classify`] — i.e. the [`crate::retry::run`]
+    /// loop would retry it (M18, FR-82).
+    ///
+    /// Useful for callers that want to short-circuit before reaching
+    /// the retry loop, e.g. log-aggregation pipelines deciding
+    /// whether a single failure should page on-call.
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            crate::retry::classify(self),
+            crate::retry::Disposition::Retry,
+        )
+    }
+
     /// Returns `true` if the server's host key did not match any pinned fingerprint.
     #[must_use]
     pub fn is_host_key_mismatch(&self) -> bool {
