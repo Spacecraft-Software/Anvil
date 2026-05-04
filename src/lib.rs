@@ -55,6 +55,7 @@ pub mod keygen;
 pub mod log;
 pub mod proxy;
 pub mod relay;
+pub mod retry;
 pub mod session;
 pub mod sshsig;
 pub mod time;

@@ -69,13 +69,19 @@ pub const CAT_CHANNEL: &str = "anvil_ssh::channel";
 /// source `file` and `line` number (FR-66).
 pub const CAT_CONFIG: &str = "anvil_ssh::config";
 
+/// `target =` string for the connection-retry / timeout category
+/// (M18, FR-83).  Events at this target record each retry attempt
+/// with `attempt`, `reason`, `elapsed_ms`, and (on terminal failure)
+/// a `disposition` field of `fatal` / `exhausted`.
+pub const CAT_RETRY: &str = "anvil_ssh::retry";
+
 /// All Anvil-defined categories, in declaration order.  Used by
 /// downstream CLIs (e.g. Gitway's `--debug-categories` flag) to
 /// validate user-supplied category names before building an
 /// `EnvFilter`.  Does not include `russh` — that's a synthetic
 /// passthrough recognized by the consumer's filter, not an Anvil
 /// category.
-pub const CATEGORIES: &[&str] = &[CAT_KEX, CAT_AUTH, CAT_CHANNEL, CAT_CONFIG];
+pub const CATEGORIES: &[&str] = &[CAT_KEX, CAT_AUTH, CAT_CHANNEL, CAT_CONFIG, CAT_RETRY];
 
 /// Installs the `log` → `tracing` bridge.
 ///
@@ -125,7 +131,10 @@ mod tests {
 
     #[test]
     fn categories_slice_matches_individual_constants() {
-        assert_eq!(CATEGORIES, &[CAT_KEX, CAT_AUTH, CAT_CHANNEL, CAT_CONFIG]);
+        assert_eq!(
+            CATEGORIES,
+            &[CAT_KEX, CAT_AUTH, CAT_CHANNEL, CAT_CONFIG, CAT_RETRY],
+        );
     }
 
     #[test]
