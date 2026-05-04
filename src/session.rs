@@ -38,6 +38,12 @@ struct GitwayHandler {
     /// — the handler will record the first fingerprint it sees in that
     /// case.
     fingerprints: Vec<String>,
+    /// SHA-256 fingerprints explicitly revoked for this host (M14, FR-64).
+    /// Checked **before** the policy and fingerprint paths: a presented
+    /// key that hits one of these is rejected unconditionally — even
+    /// [`StrictHostKeyChecking::No`] cannot override a `@revoked`
+    /// entry.
+    revoked: Vec<String>,
     /// Host-key verification policy (FR-8).
     policy: StrictHostKeyChecking,
     /// Hostname being connected to — needed by the
@@ -64,6 +70,7 @@ impl fmt::Debug for GitwayHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GitwayHandler")
             .field("fingerprints", &self.fingerprints)
+            .field("revoked", &self.revoked)
             .field("policy", &self.policy)
             .field("host", &self.host)
             .field("custom_known_hosts", &self.custom_known_hosts)
@@ -83,8 +90,24 @@ impl client::Handler for GitwayHandler {
         let fp = server_public_key.fingerprint(HashAlg::Sha256).to_string();
         log::debug!("session: checking server host key {fp}");
 
+        // M14 / FR-64: a `@revoked` entry beats every other policy —
+        // even `StrictHostKeyChecking::No` cannot override an explicit
+        // revocation.  This runs first so a compromised key can't be
+        // accepted via the insecure-skip path.
+        if self.revoked.iter().any(|r| r == &fp) {
+            return Err(AnvilError::host_key_mismatch(fp.clone()).with_hint(format!(
+                "{fp} is listed in a @revoked entry for {} in the known_hosts \
+                 file (M14, FR-64). Refusing the connection unconditionally — \
+                 the key has been explicitly blocklisted. Remove the @revoked \
+                 line if the revocation was a mistake, or rotate the upstream \
+                 host key.",
+                self.host,
+            )));
+        }
+
         // StrictHostKeyChecking=No: accept any key.  Equivalent to the
-        // 0.2.x `--insecure-skip-host-check` path.
+        // 0.2.x `--insecure-skip-host-check` path.  Reached only after
+        // the `@revoked` check above.
         if matches!(self.policy, StrictHostKeyChecking::No) {
             log::warn!("host-key verification skipped (StrictHostKeyChecking=No)");
             if let Ok(mut guard) = self.verified_fingerprint.lock() {
@@ -201,35 +224,56 @@ impl AnvilSession {
     /// `auth_banner` / `verified_fingerprint` mutex pair.
     fn build_handler_pieces(config: &AnvilConfig) -> Result<HandlerPieces, AnvilError> {
         let russh_cfg = Arc::new(build_russh_config(config.inactivity_timeout));
-        // For StrictHostKeyChecking=AcceptNew with a writable known_hosts
-        // path, an empty fingerprint set is acceptable — the handler will
-        // record the first fingerprint it sees.  Every other policy
-        // (Yes / No) treats the lookup error as fatal as before.
-        let fingerprints =
-            match hostkey::fingerprints_for_host(&config.host, &config.custom_known_hosts) {
-                Ok(fps) => fps,
-                Err(e) => {
-                    if matches!(
-                        config.strict_host_key_checking,
-                        StrictHostKeyChecking::AcceptNew
-                    ) && config.custom_known_hosts.is_some()
-                    {
-                        log::info!(
-                            "session: no fingerprints known for {}; \
-                         accept-new will record on first connection",
-                            config.host,
-                        );
-                        Vec::new()
-                    } else {
-                        return Err(e);
-                    }
-                }
-            };
+        // M14: pull the trust view (direct fingerprints + revoked
+        // entries) in one pass.  For
+        // `StrictHostKeyChecking::AcceptNew` with a writable
+        // `custom_known_hosts` path an empty fingerprint set is
+        // tolerated — the handler will record the first fingerprint
+        // it sees.  Every other policy (Yes / No) treats a fully-
+        // empty trust set as fatal, with the long-form hint copied
+        // from `fingerprints_for_host`.
+        let trust = hostkey::host_key_trust(&config.host, &config.custom_known_hosts)?;
+        let revoked: Vec<String> = trust.revoked.into_iter().map(|r| r.fingerprint).collect();
+
+        let fingerprints = if !trust.fingerprints.is_empty() {
+            trust.fingerprints
+        } else if matches!(
+            config.strict_host_key_checking,
+            StrictHostKeyChecking::AcceptNew
+        ) && config.custom_known_hosts.is_some()
+        {
+            log::info!(
+                "session: no fingerprints known for {}; \
+                 accept-new will record on first connection",
+                config.host,
+            );
+            Vec::new()
+        } else {
+            return Err(AnvilError::invalid_config(format!(
+                "no fingerprints known for host '{}'",
+                config.host
+            ))
+            .with_hint(format!(
+                "Gitway refuses to connect to hosts whose SSH fingerprint it can't \
+                         verify (no trust-on-first-use). Either you typed the hostname wrong, \
+                         or this is a self-hosted server and you need to pin its fingerprint: \
+                         fetch it from the provider's docs (GitHub, GitLab, Codeberg publish \
+                         them) and append one line to ~/.config/gitway/known_hosts:\n\
+                         \n\
+                             {} SHA256:<base64-fingerprint>\n\
+                         \n\
+                         As a last resort, re-run with --insecure-skip-host-check (not \
+                         recommended — this disables MITM protection).",
+                config.host,
+            )));
+        };
+
         let auth_banner = Arc::new(Mutex::new(None));
         let verified_fingerprint = Arc::new(Mutex::new(None));
 
         let handler = GitwayHandler {
             fingerprints,
+            revoked,
             policy: config.strict_host_key_checking,
             host: config.host.clone(),
             custom_known_hosts: config.custom_known_hosts.clone(),
