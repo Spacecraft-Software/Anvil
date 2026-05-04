@@ -2,6 +2,33 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.5.0] — 2026-05-04
+
+### Added
+
+- **`@cert-authority` parser and `host_key_trust` API** — the M14 chapter of [Gitway PRD §5.8.3](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md), partial.  Anvil now parses the OpenSSH `@cert-authority` and `@revoked` markers in `known_hosts`-style files, exposes the parsed view as a public type, and enforces `@revoked` as a policy-overriding blocklist during `check_server_key`.  Live cert validation against `@cert-authority` lines during the SSH handshake (FR-61, FR-62, FR-63) is **deferred** — see Notes.
+  - **New `cert_authority` module** — `anvil_ssh::cert_authority::parse_known_hosts(content) -> Result<KnownHostsFile, AnvilError>`.  Public types: `CertAuthority` (host pattern + algorithm + SHA-256 fingerprint + raw OpenSSH text), `RevokedEntry` (host pattern + fingerprint), `DirectHostKey` (existing `host SHA256:fp` line), `KnownHostsFile` (the three vectors).  Markers are recognized case-insensitively per OpenSSH; comma-separated host patterns split into multiple entries; OpenSSH-format `algorithm AAAA... comment` pubkeys parse via `ssh_key::PublicKey::from_openssh` for fingerprint computation; hashed entries (`|1|...|...`) are skipped with a debug log; malformed `@revoked` lines warn-and-skip so an operator typo doesn't brick the connection.
+  - **`anvil_ssh::hostkey::host_key_trust(host, custom_path) -> Result<HostKeyTrust, AnvilError>`** — new public fn returning the combined view: embedded fingerprints (GitHub / GitLab / Codeberg) + matching direct pins + matching `@cert-authority` entries + matching `@revoked` entries, all resolved in one `known_hosts` pass.  Reuses `ssh_config::lexer::wildcard_match` from M12 for pattern matching.  Unlike `fingerprints_for_host`, an empty trust set is **not** an error — the caller's policy decides.
+  - **`@revoked` enforcement in `check_server_key`** (FR-64) — `GitwayHandler` gains a `revoked: Vec<String>` field; revoked fingerprints are checked **first**, before the `StrictHostKeyChecking::No` bypass and the fingerprint match path.  A presented key whose SHA-256 fingerprint matches a revoked entry is rejected with `host_key_mismatch` and a hint mentioning the `@revoked` entry — no policy can override.
+
+### Changed
+
+- **`AnvilSession::connect` internal refactor (continued from 0.4.0)** — `build_handler_pieces` now sources its host-key trust set from `host_key_trust` instead of `fingerprints_for_host`, so direct pins, revocations, and cert authorities flow through one pass.  The empty-fingerprint branch reproduces the long-form actionable hint that `fingerprints_for_host` previously emitted.  No public-API change.
+- **`anvil-ssh` minor bump** 0.4.0 → 0.5.0 to signal the new `cert_authority` module + new public `host_key_trust` API.  Pre-1.0 SemVer: 0.4.x consumers must explicitly opt in.
+
+### Notes
+
+- **FR-61, FR-62, FR-63 deferred to a russh-upstream follow-up.** Russh 0.59's `Preferred::DEFAULT.key` host-key algorithm list contains only plain algorithms (`Algorithm::Ed25519`, `Ecdsa`, `Rsa`); the `*-cert-v01@openssh.com` variants are absent.  A server presenting its host key as a certificate falls back to a plain key during KEX, and Anvil's `check_server_key` callback never sees the certificate, so live cert validation against an `@cert-authority` line cannot run today.  The follow-up will land the validation step the moment russh exposes either an extended `Preferred::DEFAULT.key` with cert variants or a new `Handler::check_server_certificate(&Certificate)` hook.  See [Gitway PRD §10](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md) for the upstream-blocker risk row.
+- **Public-API additions only** — no breaking changes from 0.4.x.  Existing `fingerprints_for_host(host, custom_path)` keeps its `Vec<String>` shape.
+- **Negated host patterns** (`!host`) and **hashed host names** (`|1|...|...`) in `@cert-authority` entries are pre-existing limitations carried into M14 — documented as follow-ups.
+
+### Tests
+
+- 15 new unit tests in `cert_authority::tests` covering empty input, comments + blanks, direct lines, comma-separated hosts, `@cert-authority` parse + case-insensitive marker + invalid pubkey error, `@revoked` parse + case-insensitive + comma hosts + missing fingerprint, hashed-entry skip, marker-without-space negative case, mixed three-class file, whitespace tolerance.
+- 7 new unit tests in `hostkey::tests` covering `host_key_trust` embedded-set seeding, cert-authority pattern match by host glob (positive + negative), `@revoked` pattern match, direct-pin combination with embedded set, missing custom-path tolerance, and the unknown-host-empty path that the `AcceptNew` flow relies on.
+- 4 new hermetic integration tests in `tests/test_known_hosts_cert.rs` exercising the published crate boundary (`parse_known_hosts` + `host_key_trust`) — multi-class parser smoke, host-pattern filtering with positive + negative cases, embedded-set preservation across the M14.2 refactor, and parser error-message clarity.
+- Total: 207 lib tests + 4 integration tests, 0 failures, 5 ignored (pre-existing).
+
 ## [0.4.0] — 2026-05-04
 
 ### Added
