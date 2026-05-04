@@ -419,6 +419,19 @@ fn apply_directive(d: &Directive, resolved: &mut ResolvedSshConfig) -> Result<()
     }
 
     if recorded {
+        // FR-66: surface every applied directive at trace level with
+        // its source file + line so an operator running `gitway -vvv`
+        // can trace exactly which `Host` block won which directive.
+        // The `value` field rejoins the args with spaces — same shape
+        // an operator would write in `~/.ssh/config`.
+        tracing::trace!(
+            target: crate::log::CAT_CONFIG,
+            file = %d.file.display(),
+            line = d.line_no,
+            directive = %d.keyword,
+            value = %d.args.join(" "),
+            "ssh_config directive applied",
+        );
         resolved.provenance.push(DirectiveSource {
             directive: d.keyword.clone(),
             file: d.file.clone(),

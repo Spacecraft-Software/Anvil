@@ -88,6 +88,21 @@ impl client::Handler for GitwayHandler {
         server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
         let fp = server_public_key.fingerprint(HashAlg::Sha256).to_string();
+        // `Algorithm::as_str` borrows from a temporary; convert to
+        // an owned String so the value lives for the structured
+        // tracing event below.
+        let alg = server_public_key.algorithm().as_str().to_owned();
+        // FR-66: structured event — host + fingerprint + algorithm
+        // surfaced under the `kex` category at trace level so a
+        // `gitway -vvv --debug-categories=kex` consumer sees the
+        // full host-key handshake without scraping log lines.
+        tracing::trace!(
+            target: crate::log::CAT_KEX,
+            host = %self.host,
+            fp = %fp,
+            alg = %alg,
+            "check_server_key entry",
+        );
         log::debug!("session: checking server host key {fp}");
 
         // M14 / FR-64: a `@revoked` entry beats every other policy —
@@ -95,6 +110,13 @@ impl client::Handler for GitwayHandler {
         // revocation.  This runs first so a compromised key can't be
         // accepted via the insecure-skip path.
         if self.revoked.iter().any(|r| r == &fp) {
+            tracing::warn!(
+                target: crate::log::CAT_AUTH,
+                host = %self.host,
+                fp = %fp,
+                verdict = "revoked",
+                "host key in @revoked list",
+            );
             return Err(AnvilError::host_key_mismatch(fp.clone()).with_hint(format!(
                 "{fp} is listed in a @revoked entry for {} in the known_hosts \
                  file (M14, FR-64). Refusing the connection unconditionally — \
@@ -109,6 +131,13 @@ impl client::Handler for GitwayHandler {
         // 0.2.x `--insecure-skip-host-check` path.  Reached only after
         // the `@revoked` check above.
         if matches!(self.policy, StrictHostKeyChecking::No) {
+            tracing::warn!(
+                target: crate::log::CAT_AUTH,
+                host = %self.host,
+                fp = %fp,
+                verdict = "skipped",
+                "host-key verification skipped (StrictHostKeyChecking=No)",
+            );
             log::warn!("host-key verification skipped (StrictHostKeyChecking=No)");
             if let Ok(mut guard) = self.verified_fingerprint.lock() {
                 *guard = Some(fp);
@@ -120,6 +149,13 @@ impl client::Handler for GitwayHandler {
         // identical for `Yes` and `AcceptNew`: a verified existing
         // fingerprint always passes.
         if self.fingerprints.iter().any(|f| f == &fp) {
+            tracing::debug!(
+                target: crate::log::CAT_AUTH,
+                host = %self.host,
+                fp = %fp,
+                verdict = "verified",
+                "host key matches pinned fingerprint",
+            );
             log::debug!("session: host key verified: {fp}");
             if let Ok(mut guard) = self.verified_fingerprint.lock() {
                 *guard = Some(fp);
@@ -134,6 +170,14 @@ impl client::Handler for GitwayHandler {
         if matches!(self.policy, StrictHostKeyChecking::AcceptNew) && self.fingerprints.is_empty() {
             if let Some(path) = &self.custom_known_hosts {
                 hostkey::append_known_host(path, &self.host, &fp)?;
+                tracing::info!(
+                    target: crate::log::CAT_AUTH,
+                    host = %self.host,
+                    fp = %fp,
+                    path = %path.display(),
+                    verdict = "accepted_new",
+                    "host-key first-use accepted (AcceptNew)",
+                );
                 log::info!(
                     "host-key first-use accepted: {} -> {} (recorded in {})",
                     self.host,
@@ -153,6 +197,13 @@ impl client::Handler for GitwayHandler {
             );
         }
 
+        tracing::warn!(
+            target: crate::log::CAT_AUTH,
+            host = %self.host,
+            fp = %fp,
+            verdict = "mismatch",
+            "host-key fingerprint did not match any pinned entry",
+        );
         Err(AnvilError::host_key_mismatch(fp))
     }
 
@@ -368,6 +419,10 @@ impl AnvilSession {
     /// Does not panic.  An internal `expect` fires only on a logic bug
     /// (the empty-`jumps` check at the top of the function would have
     /// already returned).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Single multi-step async chain orchestrator for per-hop connect / auth / direct-tcpip; extracting helpers would just shuffle the same logic across short fns and obscure the read-flow. M15.2 added 12 lines of FR-66 instrumentation — splitting here is a future cleanup, not an M15.2 concern."
+    )]
     pub async fn connect_via_jump_hosts(
         config: &AnvilConfig,
         jumps: &[crate::proxy::JumpHost],
@@ -378,6 +433,16 @@ impl AnvilSession {
             ));
         }
 
+        // FR-66 (channel category): one structured "chain start" event so
+        // a `gitway -vvv --debug-categories=channel` consumer can see the
+        // chain shape before the per-hop events fire.
+        tracing::debug!(
+            target: crate::log::CAT_CHANNEL,
+            target_host = %config.host,
+            target_port = config.port,
+            hop_count = jumps.len(),
+            "ProxyJump chain start",
+        );
         log::debug!(
             "session: connecting to {}:{} via {} bastion hop(s)",
             config.host,
@@ -391,6 +456,17 @@ impl AnvilSession {
             let hop_config = jump_to_config(hop, config);
             let pieces = Self::build_handler_pieces(&hop_config)?;
 
+            // FR-66: per-hop "connecting" event under the channel
+            // category, with hop index + target so the chain can be
+            // reconstructed from the JSONL stream.
+            tracing::debug!(
+                target: crate::log::CAT_CHANNEL,
+                hop_index = idx + 1,
+                hop_total = jumps.len(),
+                hop_host = %hop.host,
+                hop_port = hop.port,
+                "ProxyJump hop connecting",
+            );
             log::debug!(
                 "session: bastion hop {}/{}: connecting to {}:{}",
                 idx + 1,
@@ -574,14 +650,43 @@ impl AnvilSession {
         username: &str,
         key: PrivateKeyWithHashAlg,
     ) -> Result<(), AnvilError> {
+        // FR-66: capture algorithm + fingerprint of the key being
+        // tried before handing it to russh so the structured event
+        // names exactly which identity was attempted, not just a
+        // generic "authenticating" line.
+        let alg = key.algorithm().as_str().to_owned();
+        let fp = key.public_key().fingerprint(HashAlg::Sha256).to_string();
+        tracing::debug!(
+            target: crate::log::CAT_AUTH,
+            user = %username,
+            alg = %alg,
+            fp = %fp,
+            "trying public-key authentication",
+        );
         log::debug!("session: authenticating as {username}");
 
         let result = self.handle.authenticate_publickey(username, key).await?;
 
         if result.success() {
+            tracing::info!(
+                target: crate::log::CAT_AUTH,
+                user = %username,
+                alg = %alg,
+                fp = %fp,
+                verdict = "accepted",
+                "public-key authentication succeeded",
+            );
             log::debug!("session: authentication succeeded for {username}");
             Ok(())
         } else {
+            tracing::warn!(
+                target: crate::log::CAT_AUTH,
+                user = %username,
+                alg = %alg,
+                fp = %fp,
+                verdict = "rejected",
+                "public-key authentication rejected",
+            );
             Err(AnvilError::authentication_failed())
         }
     }
