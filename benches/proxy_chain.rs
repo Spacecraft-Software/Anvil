@@ -153,8 +153,7 @@ async fn relay(
 }
 
 async fn spawn_server() -> u16 {
-    let host_key =
-        PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("generate host key");
+    let host_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("generate host key");
     let config = Arc::new(server::Config {
         inactivity_timeout: Some(Duration::from_secs(30)),
         auth_rejection_time: Duration::from_millis(50),

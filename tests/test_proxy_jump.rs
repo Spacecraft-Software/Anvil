@@ -179,8 +179,7 @@ async fn relay_channel_to_tcp(
 /// `(host_key, port)`.  The server runs inside the spawned task and
 /// stays alive until the test's tokio runtime tears down.
 async fn spawn_server() -> (PrivateKey, u16) {
-    let host_key =
-        PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("generate ed25519 host key");
+    let host_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("ed25519 key");
     let config = Arc::new(server::Config {
         inactivity_timeout: Some(Duration::from_secs(30)),
         auth_rejection_time: Duration::from_millis(50),
