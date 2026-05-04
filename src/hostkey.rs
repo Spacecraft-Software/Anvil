@@ -27,6 +27,11 @@
 
 use std::path::Path;
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use hmac::{Hmac, Mac};
+use rand_core::{OsRng, RngCore};
+use sha1::Sha1;
+
 use crate::cert_authority::{parse_known_hosts, CertAuthority, KnownHostsFile, RevokedEntry};
 use crate::error::AnvilError;
 use crate::ssh_config::lexer::wildcard_match;
@@ -147,8 +152,18 @@ fn fingerprints_from_known_hosts(path: &Path, hostname: &str) -> Result<Vec<Stri
     Ok(fps)
 }
 
-/// Returns the default known-hosts path: `~/.config/gitway/known_hosts`.
-fn default_known_hosts_path() -> Option<std::path::PathBuf> {
+/// Returns the default known-hosts path: `~/.config/gitway/known_hosts`
+/// (or the platform-equivalent `dirs::config_dir()` location).
+///
+/// Returns `None` when `dirs::config_dir()` cannot resolve a config
+/// directory (extremely rare — typically only on misconfigured CI
+/// runners with no `HOME` / `XDG_CONFIG_HOME` and no fallback).
+///
+/// Promoted from crate-private to public in M19 (PRD §5.8.8) so the
+/// `gitway hosts` subcommand family can target the same path the
+/// rest of Anvil reads from by default.
+#[must_use]
+pub fn default_known_hosts_path() -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|d| d.join("gitway").join("known_hosts"))
 }
 
@@ -324,36 +339,27 @@ fn embedded_fingerprints(host: &str) -> Vec<String> {
     }
 }
 
-/// Appends `host SHA256:<fingerprint>` as a new line to the `known_hosts`
-/// file at `path`, creating the file (and any missing parent directories)
-/// if needed.
+/// Appends `host SHA256:<fingerprint>` as a new plaintext line to
+/// the `known_hosts` file at `path`, creating the file (and any
+/// missing parent directories) if needed.
 ///
-/// Used by [`crate::ssh_config::StrictHostKeyChecking::AcceptNew`] to
-/// record the fingerprint of an otherwise-unknown host on first
-/// connection.  This is the minimum write surface — file locking and
-/// duplicate-detection are deferred to the post-M12 TOFU UX.
+/// Promoted from crate-private to public in M19 (PRD §5.8.8 FR-85)
+/// so the `gitway hosts add` verb can drive the write side without a
+/// re-export shim.  Used internally by
+/// [`crate::ssh_config::StrictHostKeyChecking::AcceptNew`] for the
+/// first-connection TOFU path.
+///
+/// File locking and duplicate-detection are deferred to a post-M19
+/// polish pass — see PRD §5.8.8 risks.
 ///
 /// # Errors
 ///
-/// Returns an error if the parent directory cannot be created, or if
-/// the file cannot be opened for append, or if the write fails.
-pub(crate) fn append_known_host(
-    path: &Path,
-    host: &str,
-    fingerprint: &str,
-) -> Result<(), AnvilError> {
+/// Returns an error if the parent directory cannot be created, the
+/// file cannot be opened for append, or the write fails.
+pub fn append_known_host(path: &Path, host: &str, fingerprint: &str) -> Result<(), AnvilError> {
     use std::io::Write;
 
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                AnvilError::invalid_config(format!(
-                    "could not create known_hosts parent {}: {e}",
-                    parent.display(),
-                ))
-            })?;
-        }
-    }
+    ensure_parent_exists(path)?;
 
     let line = format!("{host} {fingerprint}\n");
     let mut file = std::fs::OpenOptions::new()
@@ -373,6 +379,285 @@ pub(crate) fn append_known_host(
         ))
     })?;
 
+    Ok(())
+}
+
+/// Appends `|1|<base64-salt>|<base64-hmac-sha1> SHA256:<fingerprint>`
+/// to the `known_hosts` file at `path`, generating a fresh 20-byte
+/// random salt for this entry.
+///
+/// This is the M19 (PRD §5.8.8 FR-84) write-side counterpart to
+/// [`crate::cert_authority::HashedHost::matches`].  The encoding is
+/// bit-for-bit identical to what `ssh-keygen -H` would write — see
+/// the `tests/test_hostkey_writes.rs` round-trip test that proves it
+/// re-parses through [`crate::cert_authority::parse_known_hosts`] +
+/// [`crate::cert_authority::HashedHost::matches(host)`] cleanly.
+///
+/// `host` is what gets HMAC-SHA1'd; pass exactly the hostname the
+/// caller wants the hash to match (no implicit lower-casing — that
+/// policy lives in the caller, mirroring OpenSSH's
+/// `hostfile.c::lowercase` flag handling).
+///
+/// # Errors
+///
+/// Returns an error if the parent directory cannot be created, the
+/// file cannot be opened for append, or the write fails.
+pub fn append_known_host_hashed(
+    path: &Path,
+    host: &str,
+    fingerprint: &str,
+) -> Result<(), AnvilError> {
+    use std::io::Write;
+
+    ensure_parent_exists(path)?;
+
+    // Fresh 20-byte salt per entry, sourced from the OS RNG.
+    let mut salt = [0u8; 20];
+    OsRng.fill_bytes(&mut salt);
+
+    let mut mac = <Hmac<Sha1>>::new_from_slice(&salt).map_err(|_e| {
+        // `_e` is the InvalidLength variant; HMAC-SHA1 does not
+        // enforce key-length restrictions in practice, so this
+        // branch is effectively dead.  Discarded by design.
+        AnvilError::invalid_config(
+            "HMAC-SHA1 init failed unexpectedly; refusing to write hashed entry".to_owned(),
+        )
+    })?;
+    mac.update(host.as_bytes());
+    let hash = mac.finalize().into_bytes();
+
+    let line = format!(
+        "|1|{}|{} {fingerprint}\n",
+        BASE64.encode(salt),
+        BASE64.encode(hash.as_slice()),
+    );
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .map_err(|e| {
+            AnvilError::invalid_config(format!(
+                "could not open known_hosts {} for append: {e}",
+                path.display(),
+            ))
+        })?;
+    file.write_all(line.as_bytes()).map_err(|e| {
+        AnvilError::invalid_config(format!(
+            "could not write to known_hosts {}: {e}",
+            path.display(),
+        ))
+    })?;
+
+    Ok(())
+}
+
+/// Prepends `@revoked <host_pattern> <fingerprint>` to the
+/// `known_hosts` file at `path`, atomically via a sibling tempfile +
+/// rename.  Creates the file (and missing parents) if it does not
+/// yet exist.
+///
+/// M19 (PRD §5.8.8 FR-86): the `@revoked` line is written **first**
+/// in the file so it surfaces ahead of any direct pin during
+/// human inspection.  The trust-merger ([`host_key_trust`])
+/// already treats `@revoked` as a hard reject regardless of position,
+/// so the prepend is purely a readability convention.
+///
+/// # Atomicity
+///
+/// Reads the existing file into memory (capped at 1 MiB), prepends
+/// the new line, writes to `<path>.tmp.<random>`, then
+/// [`std::fs::rename`] over the original.  POSIX `rename` is atomic
+/// within a filesystem; on Windows, `MoveFileEx` with
+/// `MOVEFILE_REPLACE_EXISTING` is the closest equivalent and is what
+/// `std::fs::rename` uses.  A crash mid-rename leaves either the old
+/// file or the new one — never a torn write.
+///
+/// # Errors
+///
+/// Returns an error if the file is larger than 1 MiB, the parent
+/// directory cannot be created, the tempfile cannot be opened, or
+/// the rename fails.
+pub fn prepend_revoked(
+    path: &Path,
+    host_pattern: &str,
+    fingerprint: &str,
+) -> Result<(), AnvilError> {
+    use std::io::Write;
+
+    const MAX_FILE_BYTES: u64 = 1024 * 1024;
+
+    ensure_parent_exists(path)?;
+
+    // Read the existing file (or treat missing as empty).
+    let existing: Vec<u8> = if path.exists() {
+        let metadata = std::fs::metadata(path).map_err(|e| {
+            AnvilError::invalid_config(format!(
+                "could not stat known_hosts {} for revoke: {e}",
+                path.display(),
+            ))
+        })?;
+        if metadata.len() > MAX_FILE_BYTES {
+            return Err(AnvilError::invalid_config(format!(
+                "known_hosts {} is larger than {MAX_FILE_BYTES} bytes; refusing to load \
+                 entire file into memory for revoke. Split the file or pass --known-hosts \
+                 to point at a smaller one.",
+                path.display(),
+            )));
+        }
+        std::fs::read(path).map_err(|e| {
+            AnvilError::invalid_config(format!(
+                "could not read known_hosts {} for revoke: {e}",
+                path.display(),
+            ))
+        })?
+    } else {
+        Vec::new()
+    };
+
+    // Build the temp path with a random suffix so concurrent revokes
+    // don't collide on the same temp name.
+    let mut suffix_bytes = [0u8; 8];
+    OsRng.fill_bytes(&mut suffix_bytes);
+    let suffix = BASE64
+        .encode(suffix_bytes)
+        .replace('/', "_")
+        .replace('+', "-");
+    let tmp_path = path.with_extension(format!("revoke.{suffix}.tmp"));
+
+    let mut tmp = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp_path)
+        .map_err(|e| {
+            AnvilError::invalid_config(format!(
+                "could not create temp file {} for revoke: {e}",
+                tmp_path.display(),
+            ))
+        })?;
+
+    let new_line = format!("@revoked {host_pattern} {fingerprint}\n");
+    tmp.write_all(new_line.as_bytes())
+        .map_err(|e| AnvilError::invalid_config(format!("could not write revoke header: {e}")))?;
+    tmp.write_all(&existing).map_err(|e| {
+        AnvilError::invalid_config(format!("could not copy existing known_hosts contents: {e}"))
+    })?;
+    tmp.sync_all().map_err(|e| {
+        AnvilError::invalid_config(format!("could not fsync temp file before rename: {e}"))
+    })?;
+    drop(tmp);
+
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        // Best-effort cleanup of the orphaned tempfile; ignore the
+        // result because we're already in an error path.
+        let _ = std::fs::remove_file(&tmp_path);
+        AnvilError::invalid_config(format!(
+            "could not rename {} -> {}: {e}",
+            tmp_path.display(),
+            path.display(),
+        ))
+    })?;
+
+    Ok(())
+}
+
+/// Returns the embedded fingerprint catalogue as `(host, fingerprint,
+/// algorithm)` triples for surfacing in `gitway hosts list`.
+///
+/// The algorithm tag is one of `"ed25519"`, `"ecdsa"`, `"rsa"` —
+/// matches the per-index ordering inside [`GITHUB_FINGERPRINTS`],
+/// [`GITLAB_FINGERPRINTS`], and [`CODEBERG_FINGERPRINTS`].
+#[must_use]
+pub fn all_embedded() -> Vec<(String, String, &'static str)> {
+    const ALGS: [&str; 3] = ["ed25519", "ecdsa", "rsa"];
+    let mut out = Vec::with_capacity(9);
+    for (host, fps) in [
+        ("github.com", GITHUB_FINGERPRINTS),
+        ("gitlab.com", GITLAB_FINGERPRINTS),
+        ("codeberg.org", CODEBERG_FINGERPRINTS),
+    ] {
+        for (idx, fp) in fps.iter().enumerate() {
+            let alg = ALGS.get(idx).copied().unwrap_or("unknown");
+            out.push((host.to_owned(), (*fp).to_owned(), alg));
+        }
+    }
+    out
+}
+
+/// Per-file format detected by [`detect_hash_mode`].  Drives whether
+/// `gitway hosts add` should emit a hashed or plaintext entry by
+/// default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HashMode {
+    /// File does not exist, or contains no recognizable host lines.
+    Empty,
+    /// At least one direct line uses the plaintext `host SHA256:fp`
+    /// shape; no hashed entries seen.  New entries default to
+    /// plaintext.
+    Plaintext,
+    /// At least one direct line uses the `|1|salt|hash SHA256:fp`
+    /// shape.  New entries default to hashed.
+    Hashed,
+}
+
+/// Inspects the existing `known_hosts` file at `path` and decides
+/// whether new entries should be hashed (matches OpenSSH's
+/// `HashKnownHosts yes` behaviour) or plaintext.
+///
+/// - Returns [`HashMode::Empty`] if the file does not exist or is
+///   empty / contains only comments + `@`-marker lines.
+/// - Returns [`HashMode::Hashed`] if **any** non-comment direct line
+///   starts with `|1|` (matches OpenSSH's `_ssh_host_hashed_p` check).
+/// - Returns [`HashMode::Plaintext`] otherwise.
+///
+/// Cheap — reads the file once line-by-line and short-circuits on
+/// the first hashed token seen.
+///
+/// # Errors
+///
+/// Returns an error only if the file exists but cannot be read.
+pub fn detect_hash_mode(path: &Path) -> Result<HashMode, AnvilError> {
+    if !path.exists() {
+        return Ok(HashMode::Empty);
+    }
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        AnvilError::invalid_config(format!(
+            "could not read known_hosts {} for hash-mode detect: {e}",
+            path.display(),
+        ))
+    })?;
+    let mut saw_plaintext = false;
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('@') {
+            continue;
+        }
+        // Direct line.  Inspect the first whitespace-delimited token.
+        let host_token = line.split_whitespace().next().unwrap_or("");
+        if host_token.starts_with("|1|") {
+            return Ok(HashMode::Hashed);
+        }
+        saw_plaintext = true;
+    }
+    if saw_plaintext {
+        Ok(HashMode::Plaintext)
+    } else {
+        Ok(HashMode::Empty)
+    }
+}
+
+/// Internal helper — `mkdir -p` for the parent of `path`.  Used by
+/// every M19 writer so they share the same error-message shape.
+fn ensure_parent_exists(path: &Path) -> Result<(), AnvilError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                AnvilError::invalid_config(format!(
+                    "could not create known_hosts parent {}: {e}",
+                    parent.display(),
+                ))
+            })?;
+        }
+    }
     Ok(())
 }
 
