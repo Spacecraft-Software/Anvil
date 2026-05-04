@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Rust guideline compliant 2026-03-30
-#![allow(
-    dead_code,
-    reason = "M13.1 lands the proxy module's building blocks (token \
-              expansion, ChildStdio adapter, spawn helper) as crate-private \
-              items; M13.2 wires them into AnvilSession::connect_via_proxy_command \
-              and the dead-code analysis turns clean. Remove this allow at \
-              M13.2 time."
-)]
 //! `ProxyCommand` and `ProxyJump` consumers (PRD §5.8.2, M13).
 //!
 //! M12 captured `proxy_command` and `proxy_jump` losslessly into
