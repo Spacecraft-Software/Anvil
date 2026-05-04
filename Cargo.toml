@@ -21,6 +21,16 @@ russh         = { version = "0.59", default-features = false, features = ["flate
 tokio         = { version = "1",    features = ["io-util", "io-std", "rt-multi-thread", "net", "sync", "macros", "signal", "time", "process"] }
 thiserror     = "2"
 log           = "0.4"
+# Structured tracing for the M15 verbose / JSONL debug surface
+# (FR-65..FR-69).  Anvil instruments hot paths via `tracing::*!`
+# macros with per-category targets (`anvil_ssh::kex`,
+# `anvil_ssh::auth`, `anvil_ssh::channel`, `anvil_ssh::config`);
+# `tracing-log` bridges the existing `log::*!` calls into the same
+# pipeline so downstream consumers (Gitway, russh) all funnel
+# through one subscriber.  No subscriber is installed by the
+# library — Gitway's CLI owns that policy.
+tracing       = "0.1"
+tracing-log   = "0.2"
 dirs          = "6"
 zeroize       = "1.7"
 
