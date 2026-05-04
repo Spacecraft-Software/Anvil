@@ -2,6 +2,32 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.8.0] — 2026-05-04
+
+### Added
+
+- **Algorithm overrides** — the M17 chapter of [Gitway PRD §5.8.6](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md), FR-76..FR-79.  Closes the M12.6 algorithm-override loop: `KexAlgorithms` / `Ciphers` / `MACs` / `HostKeyAlgorithms` directives from `~/.ssh/config` (and the matching CLI overrides M17.4 will land in Gitway 1.0.0-rc.8) now flow through to russh's `Preferred` set instead of being parsed and discarded.
+  - **New `anvil_ssh::algorithms` module** — public surface: `pub const DENYLIST: &[&str]` (DSA, 3DES, Arcfour variants, hmac-sha1-96, ssh-1.0); `pub fn is_denylisted` / `apply_denylist`; `pub enum AlgCategory { Kex, Cipher, Mac, HostKey }`; `pub fn apply_overrides(category, base, override_str)` implementing OpenSSH's `+algo` (append) / `-algo` (remove) / `^algo` (front-load) / `algo,algo` (replace) syntax; `pub fn anvil_default_kex` / `anvil_default_ciphers` / `anvil_default_macs` / `anvil_default_host_keys` returning the curated default base for `+/-/^` overrides; `pub struct Catalogue { kex, cipher, mac, host_key }` of `pub struct AlgEntry { name, is_default, denylisted }` and `pub fn all_supported() -> Catalogue` for `gitway list-algorithms` (FR-79).
+  - **New `AnvilConfig` fields**: `kex_algorithms`, `ciphers`, `macs`, `host_key_algorithms` (each `Option<Vec<String>>`).  `None` selects the curated default; `Some` is a list already filtered through `apply_overrides`.  Matching `AnvilConfigBuilder` setters added.
+  - **`apply_ssh_config` consumption**: `KexAlgorithms` / `Ciphers` / `MACs` / `HostKeyAlgorithms` directives are now plumbed through `apply_overrides` against the curated default and stored on the builder.  The M17 deferral warning that pointed at this work has been removed.
+  - **`build_russh_config(&AnvilConfig)`**: signature changed (was `(Duration)`).  Now consumes the four config fields, falling back to `anvil_default_*()` when each `Option` is `None`.  Three new private lookups (`russh_kex_name` / `russh_cipher_name` / `russh_mac_name`) map user strings to russh's `&'static str`-backed `Name` constants; unknown names are silently dropped (russh's `Name` types only accept `'static`).  Host-key field uses the existing `russh::keys::Algorithm::FromStr` impl.
+  - **FR-66 / M15 instrumentation**: new `tracing::trace!` event at `CAT_KEX` listing the four offered preference vectors before `client::connect` — answers "what did Gitway TRY to negotiate?" alongside M15.2's `check_server_key` event.
+
+### Changed
+
+- **`anvil-ssh` minor bump** 0.7.0 → 0.8.0 to signal the new `algorithms` module + four new public `AnvilConfig` fields + the `build_russh_config` signature change.  Pre-1.0 SemVer: 0.7.x consumers must explicitly opt in.
+
+### Notes
+
+- **FR-78 enforcement** is deliberate.  Russh 0.59 already excludes most denylisted algorithms by default; the explicit list in `algorithms::DENYLIST` is a defensive belt-and-suspenders pass at the override boundary.  Operators who genuinely need to reach a legacy peer that only speaks DSA / 3DES / Arcfour / SHA-1 HMAC <96-bit must use external `ssh -W` as a `ProxyCommand` and accept the security loss explicitly.
+- **HMAC-SHA1 caveat** (M19 inheritance): the privacy-only HMAC-SHA1 used for `HashKnownHosts` is unrelated to the FR-78 `hmac-sha1-96` denylist entry.  The denylist targets MAC negotiation in the SSH protocol, not the privacy-preserving hostname hash.
+- **Public-API additions only** — no breaking changes from 0.7.x for downstream consumers (the `build_russh_config` signature change is crate-private).
+
+### Tests
+
+- 23 new unit tests in `algorithms::tests` covering: denylist case-insensitivity, every prefix branch (none / + / - / ^ / empty), case-insensitive dedup on append, silent skip on remove of absent, OpenSSH front-load semantics (reorder-not-add), denylisted-token rejection in any prefix form, error-hint shape, whitespace trim + empty-token drop, catalogue invariants (≥1 default per category, default+denylisted disjoint, ssh-dss tagged), curated-defaults exclude denylist, host-key default excludes ssh-dss / includes ssh-ed25519, category-label stability.
+- Existing `session::tests` updated to construct an `AnvilConfig` for the new `build_russh_config` signature.
+
 ## [0.7.0] — 2026-05-04
 
 ### Added
