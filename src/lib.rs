@@ -43,6 +43,7 @@
 //! - **Metric / SI / ISO 8601** throughout all timestamps and measurements.
 
 pub mod agent;
+pub mod algorithms;
 pub mod allowed_signers;
 pub mod auth;
 pub mod cert_authority;
