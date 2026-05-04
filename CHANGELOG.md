@@ -2,6 +2,37 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.9.0] — 2026-05-04
+
+### Added
+
+- **Connection retry, backoff, and timeouts** — the M18 chapter of [Gitway PRD §5.8.7](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md), FR-80..FR-83.  Closes the M12.6 `ConnectTimeout` / `ConnectionAttempts` deferral loop.
+  - **New `anvil_ssh::retry` module** — public surface: `RetryPolicy { attempts, base, factor, cap, max_window, connect_timeout }` with builder setters; `Disposition { Retry, Fatal }` + `classify(err)` (FR-82); `RetryAttempt { attempt, reason, elapsed }`; `async fn run<F, Fut, T>(policy, op) -> (T, Vec<RetryAttempt>)` (FR-81, FR-83) — drives a jittered exponential backoff loop with `OsRng` jitter, bails on `max_window` exhaustion, emits a `tracing::warn!` event at the new `CAT_RETRY` category per failed attempt.  `run` is timeout-agnostic — the per-attempt `tokio::time::timeout` wrap lives at the call site.  Default policy: 3 attempts, 250 ms base, ×2 factor, 8 s cap, 30 s max_window, no connect_timeout.
+  - **New `anvil_ssh::log::CAT_RETRY = "anvil_ssh::retry"`** appended to `CATEGORIES` for downstream `--debug-categories` validators.
+  - **`AnvilError::io_kind()`** returns `Option<std::io::ErrorKind>` for the `Io` variant — used by the FR-82 classifier and useful for downstream consumers inspecting failure categories.
+  - **`AnvilError::is_transient()`** wraps the classifier as a single-call predicate.
+  - **Three new public `AnvilConfig` fields** — `connect_timeout: Option<Duration>`, `connection_attempts: Option<u32>`, `max_retry_window: Option<Duration>` — and matching `AnvilConfigBuilder` setters.  Each `None` falls through to `RetryPolicy::default()` at session-build time.
+  - **`apply_ssh_config` consumes `connect_timeout` + `connection_attempts`** from the parsed `ssh_config` (only when the builder field is `None` — preserves CLI-wins precedence).  `max_retry_window` is CLI-only — not in OpenSSH's grammar.
+  - **`AnvilSession::connect` wrapped in `retry::run`** — each attempt rebuilds `HandlerPieces` (russh consumes the handler), calls `client::connect` inside `tokio::time::timeout` when `connect_timeout` is `Some`, surfaces `Elapsed` as `Io(TimedOut)` so the FR-82 classifier retries it.  Auth / host-key / protocol errors are fatal and surface immediately.
+  - **`AnvilSession::retry_history()`** accessor returns `&[RetryAttempt]` — empty when first attempt succeeded, otherwise the per-attempt history captured during connect.  Surfaces in `gitway --test --json`'s `data.retry_attempts` envelope (FR-83).
+
+### Changed
+
+- **`anvil-ssh` minor bump** 0.8.0 → 0.9.0 to signal the new public `retry` module + three new `AnvilConfig` fields + `AnvilSession::retry_history` accessor.  Pre-1.0 SemVer: 0.8.x consumers must explicitly opt in.
+- **`config.rs::warn_unhonored_directives` removed.**  Every `ssh_config(5)` directive Anvil's resolver parses today is now consumed: `HostKeyAlgorithms` / `KexAlgorithms` / `Ciphers` / `MACs` landed in M17; `ConnectTimeout` / `ConnectionAttempts` in M18.
+
+### Notes
+
+- **HTTP 429/503 detection** (FR-82's defensive wording) is out of scope — Anvil speaks raw SSH.  HTTP statuses only appear in `ProxyCommand` subprocess output that Anvil doesn't parse; a future ProxyCommand-HTTP-CONNECT milestone may extend `classify` to handle them.
+- **Russh-handshake failures are NOT retried.**  Once the TCP socket is up, every failure is either a fatal user-input error (auth, host-key) or an in-flight protocol error mid-handshake.  `classify` returns `Fatal` for every `russh::Error` variant.
+- **Scope-narrowing for the proxy / jump paths.**  `connect_via_proxy_command` and `connect_via_jump_hosts` (per-hop + final) construct `AnvilSession` with empty `retry_history` — the ProxyCommand subprocess lifecycle and per-hop `direct-tcpip` channels make retry semantics murkier than the primary path; deferred to a follow-up sub-milestone.  `gitway --test` against a direct target host gets the full FR-80..FR-83 coverage today.
+- **Public-API additions only** — no breaking changes from 0.8.x.
+
+### Tests
+
+- 15 new unit tests in `retry::tests` covering: default-policy values, builder chainability, classifier matrix (auth-fatal / host-key-fatal / no-key-fatal / io-connection-refused-retry / io-timed-out-retry / io-not-found-retry / io-permission-denied-fatal), run loop (success-first / bail-on-fatal / retry-record-history / exhaust-count), backoff curve (exponential growth, cap enforcement, 1000-draw jitter window).
+- Existing 207 lib + integration tests still green; M11–M17 surface unchanged.
+
 ## [0.8.0] — 2026-05-04
 
 ### Added
