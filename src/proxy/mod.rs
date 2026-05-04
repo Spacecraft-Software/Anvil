@@ -22,7 +22,9 @@
 //! M13.3 and M13.4.
 
 pub(crate) mod command;
+pub mod jump;
 pub(crate) mod stdio;
 pub mod tokens;
 
+pub use jump::{parse_jump_chain, JumpHost, MAX_JUMP_HOPS};
 pub use tokens::expand_proxy_tokens;
