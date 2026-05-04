@@ -2,6 +2,29 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.4.0] — 2026-05-04
+
+### Added
+
+- **`ProxyCommand` and `ProxyJump` consumers** — the M13 chapter of [Gitway PRD §5.8.2](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md). Anvil now actually consumes the directives M12 captured into `ResolvedSshConfig`:
+  - **`AnvilSession::connect_via_proxy_command(config, template, alias)`** (FR-55) — token-expands `%h %p %r %n %%` against `config.host` / `config.port` / `config.username` / `alias`, spawns the resulting command line through the platform shell (`sh -c` on Unix, `cmd /C` on Windows), and uses the child's stdin/stdout as the SSH transport via `russh::client::connect_stream`. The literal `none` (case-insensitive) is rejected as the FR-59 disable sentinel.
+  - **`AnvilSession::connect_via_jump_hosts(config, jumps)`** (FR-56, FR-57, NFR-17) — chains through up to `MAX_JUMP_HOPS = 8` bastions via russh `direct-tcpip` channels, with **independent host-key verification at every hop** (failure at hop n+1 aborts the entire chain — no partial-success path). Each bastion is authenticated via `authenticate_best` so the next hop's `direct-tcpip` channel can be opened through it.
+- **New `proxy` module** — public surface:
+  - `proxy::expand_proxy_tokens(template, host, port, user, alias) -> String` — `%h %p %r %n %%` substitution.
+  - `proxy::parse_jump_chain(raw) -> Result<Vec<JumpHost>, AnvilError>` — `[user@]host[:port]` comma-separated parser.
+  - `proxy::JumpHost` and `proxy::MAX_JUMP_HOPS`.
+- **`ProxyCommand=none` honored** in the `ssh_config` resolver (FR-59) — preserves the literal `"none"` so first-occurrence-wins shields it from a later wildcard, and `gitway config show` mirrors `ssh -G`'s output.
+
+### Changed
+
+- **`AnvilSession::connect` internal refactor** — host-key fingerprint lookup, handler construction, and `auth_banner` / `verified_fingerprint` mutex setup now flow through a private `build_handler_pieces` helper shared by `connect`, `connect_via_proxy_command`, and `connect_via_jump_hosts`. No public-API change.
+- **`anvil-ssh` minor bump** 0.3.1 → 0.4.0 to signal the new `proxy` chapter. Pre-1.0 SemVer: 0.3.x consumers must explicitly opt in.
+
+### Notes
+
+- The `proxy::stdio::ChildStdio` adapter is `pub(crate)` for now; promote to public if/when downstream consumers need to wire russh through arbitrary `tokio::process::Child` stdio outside of Anvil's own session constructors.
+- Two unix-only round-trip tests (`round_trips_data_through_cat`, `spawns_through_shell_with_token_expansion`) are gated `#[ignore]` due to a `read_to_end`/`shutdown` interaction with `tokio::process::Child` stdio piping observed to hang in CI runners. The full pipeline is covered by the upcoming M13.7 integration test against a `russh::server`. Run the gated tests locally with `cargo test -- --ignored stdio`.
+
 ## [0.3.1] — 2026-05-04
 
 ### Added
