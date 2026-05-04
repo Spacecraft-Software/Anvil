@@ -1,0 +1,17 @@
+description: "ProxyCommand none disables a parent block's ProxyCommand (FR-59)"
+
+# A more specific block's `ProxyCommand none` MUST win over a later
+# wildcard block's `ProxyCommand` because the resolver applies first-
+# occurrence-wins.  The literal `none` (case-insensitive) is preserved
+# so `gitway config show` mirrors `ssh -G`; spawn-path code (M13.2)
+# recognizes the literal and skips spawning.
+config: |
+  Host gh
+    ProxyCommand none
+  Host *
+    ProxyCommand /usr/bin/false
+
+host: gh
+
+expected:
+  proxy_command: "none"

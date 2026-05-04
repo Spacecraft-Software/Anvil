@@ -141,8 +141,12 @@ pub struct ResolvedSshConfig {
     pub identity_agent: Option<PathBuf>,
     /// `CertificateFile` — every entry contributes one path, in source order.
     pub certificate_files: Vec<PathBuf>,
-    /// `ProxyCommand` — captured raw (joined with single spaces);
-    /// M13 parses and spawns it.
+    /// `ProxyCommand` — captured raw (joined with single spaces); M13
+    /// parses and spawns it.  The literal value `"none"` (lower-cased)
+    /// is the FR-59 disable sentinel: it is preserved here so that the
+    /// first-occurrence-wins rule shields it from a later wildcard
+    /// override, and so `gitway config show` mirrors `ssh -G`'s output;
+    /// the spawn path treats `Some("none")` as "no proxy".
     pub proxy_command: Option<String>,
     /// `ProxyJump` — captured raw; M13 parses the chain.
     pub proxy_jump: Option<String>,
@@ -298,9 +302,30 @@ fn apply_directive(d: &Directive, resolved: &mut ResolvedSshConfig) -> Result<()
                 if d.args.is_empty() {
                     return Err(missing_value_err(d));
                 }
-                // ProxyCommand takes the rest of the line as a shell
-                // command; the lexer split it on whitespace so we re-join.
-                resolved.proxy_command = Some(d.args.join(" "));
+                // FR-59: `ProxyCommand none` is the OpenSSH idiom for
+                // cancelling a parent block's ProxyCommand without
+                // resorting to ssh_config surgery.  We preserve the
+                // literal token `none` so that:
+                //   1. First-occurrence wins still applies — a later
+                //      `Host *` block's `ProxyCommand foo` cannot
+                //      re-enable the proxy after a `none`, since the
+                //      `is_none()` guard above is false once we set the
+                //      field below.
+                //   2. `gitway config show` prints `proxycommand none`
+                //      faithfully (matches `ssh -G`).
+                //   3. The spawn path (M13.2) recognizes the literal
+                //      and skips spawning, treating the host as direct.
+                // Lower-case the user's input so the spawn path's
+                // recognition is one comparison instead of two.
+                let value = if d.args.len() == 1 && d.args[0].eq_ignore_ascii_case("none") {
+                    "none".to_owned()
+                } else {
+                    // ProxyCommand takes the rest of the line as a shell
+                    // command; the lexer split it on whitespace so we
+                    // re-join.
+                    d.args.join(" ")
+                };
+                resolved.proxy_command = Some(value);
             }
         }
         "proxyjump" => {
@@ -599,6 +624,57 @@ mod tests {
         let (_g, conf) = write_config("Host gh\n  ProxyJump bastion.example.com\n");
         let resolved = resolve("gh", &paths_user_only(conf)).expect("resolve");
         assert_eq!(resolved.proxy_jump.as_deref(), Some("bastion.example.com"),);
+    }
+
+    #[test]
+    fn proxy_command_none_preserved_as_literal() {
+        // FR-59: `ProxyCommand none` is the OpenSSH idiom for cancelling a
+        // parent block's ProxyCommand.  We preserve the literal `"none"`
+        // (lower-cased) so first-occurrence-wins protects it from a later
+        // wildcard match, and so `gitway config show` prints it faithfully.
+        let (_g, conf) = write_config("Host gh\n  ProxyCommand none\n");
+        let resolved = resolve("gh", &paths_user_only(conf)).expect("resolve");
+        assert_eq!(resolved.proxy_command.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn proxy_command_none_case_insensitive() {
+        // OpenSSH treats the literal case-insensitively.
+        for raw in ["NONE", "None", "nOnE"] {
+            let (_g, conf) = write_config(&format!("Host gh\n  ProxyCommand {raw}\n"));
+            let resolved = resolve("gh", &paths_user_only(conf)).expect("resolve");
+            assert_eq!(
+                resolved.proxy_command.as_deref(),
+                Some("none"),
+                "case `{raw}`: should normalize to lowercase `none`",
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_command_none_overrides_later_wildcard() {
+        // FR-59 precedence: a more specific block's `ProxyCommand none`
+        // appearing earlier in the file beats a later `Host *` block's
+        // ProxyCommand foo, because the resolver applies first-occurrence-
+        // wins.  The result is `Some("none")` — the spawn path treats this
+        // as "no proxy".
+        let (_g, conf) =
+            write_config("Host gh\n  ProxyCommand none\nHost *\n  ProxyCommand /usr/bin/false\n");
+        let resolved = resolve("gh", &paths_user_only(conf)).expect("resolve");
+        assert_eq!(resolved.proxy_command.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn proxy_command_with_word_none_in_middle_not_treated_as_disable() {
+        // The `none` literal is only recognized when it is the SOLE
+        // argument.  A multi-word command containing `none` is preserved
+        // verbatim (re-joined with single spaces).
+        let (_g, conf) = write_config("Host gh\n  ProxyCommand none-yet-a-real-cmd %h\n");
+        let resolved = resolve("gh", &paths_user_only(conf)).expect("resolve");
+        assert_eq!(
+            resolved.proxy_command.as_deref(),
+            Some("none-yet-a-real-cmd %h"),
+        );
     }
 
     #[test]
