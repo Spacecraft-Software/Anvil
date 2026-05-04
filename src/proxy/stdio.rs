@@ -197,9 +197,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rejects_child_without_piped_stdin() {
+    #[tokio::test]
+    async fn rejects_child_without_piped_stdin() {
         // Spawn without piping stdin — `ChildStdio::new` should refuse.
+        // `tokio::test` is needed (not plain `test`) so
+        // `tokio::process::Command::spawn` finds a Tokio reactor.
         if cfg!(windows) {
             return;
         }
