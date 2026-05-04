@@ -276,6 +276,177 @@ impl AnvilSession {
         })
     }
 
+    /// Establishes the SSH session through a chain of `ProxyJump`
+    /// bastion hops (FR-56).
+    ///
+    /// For each hop in `jumps`:
+    ///
+    /// 1. Build a per-hop [`AnvilConfig`] from the [`JumpHost`] fields,
+    ///    inheriting `strict_host_key_checking`, `custom_known_hosts`,
+    ///    and `verbose` from the primary `config`.  Per-hop user and
+    ///    `identity_files` come from the [`JumpHost`] when set, else
+    ///    from the primary config.
+    /// 2. Connect: the *first* hop uses [`russh::client::connect`] over
+    ///    TCP; subsequent hops use the *previous* hop's
+    ///    `direct-tcpip` channel as the underlying transport via
+    ///    [`russh::client::connect_stream`].
+    /// 3. Run host-key verification — every hop runs the full
+    ///    [`GitwayHandler::check_server_key`] path independently
+    ///    (NFR-17: failure at hop `n+1` aborts the entire chain;
+    ///    no partial-success path).
+    /// 4. Authenticate the hop with [`AnvilSession::authenticate_best`]
+    ///    so the chain can open `direct-tcpip` to the next hop.
+    ///
+    /// After the loop, the *last* bastion's handle is used to open
+    /// `direct-tcpip` to the primary `config.host` / `config.port`,
+    /// and the resulting [`ChannelStream`] becomes the SSH transport
+    /// for the final session this method returns.
+    ///
+    /// # Per-hop `ssh_config`
+    ///
+    /// This method does NOT re-resolve `ssh_config` per hop — that
+    /// requires the caller's [`SshConfigPaths`], which the session
+    /// module deliberately does not depend on.  The CLI dispatcher
+    /// (M13.6) is responsible for populating
+    /// [`JumpHost::identity_files`] (and any other per-hop overrides)
+    /// from per-hop [`crate::ssh_config::resolve`] calls before
+    /// invoking this method.
+    ///
+    /// # Errors
+    /// Returns the first error encountered.  An empty `jumps` slice is
+    /// rejected with a clear message — callers should use
+    /// [`Self::connect`] when no chain is in play.  Authentication
+    /// failures at any intermediate hop terminate the whole chain.
+    /// `ChannelStream`-based transport errors propagate via the
+    /// usual russh / [`AnvilError`] mapping.
+    ///
+    /// # Panics
+    /// Does not panic.  An internal `expect` fires only on a logic bug
+    /// (the empty-`jumps` check at the top of the function would have
+    /// already returned).
+    pub async fn connect_via_jump_hosts(
+        config: &AnvilConfig,
+        jumps: &[crate::proxy::JumpHost],
+    ) -> Result<Self, AnvilError> {
+        if jumps.is_empty() {
+            return Err(AnvilError::invalid_config(
+                "ProxyJump: empty jump-host list; call AnvilSession::connect instead",
+            ));
+        }
+
+        log::debug!(
+            "session: connecting to {}:{} via {} bastion hop(s)",
+            config.host,
+            config.port,
+            jumps.len(),
+        );
+
+        let mut prev_handle: Option<client::Handle<GitwayHandler>> = None;
+
+        for (idx, hop) in jumps.iter().enumerate() {
+            let hop_config = jump_to_config(hop, config);
+            let pieces = Self::build_handler_pieces(&hop_config)?;
+
+            log::debug!(
+                "session: bastion hop {}/{}: connecting to {}:{}",
+                idx + 1,
+                jumps.len(),
+                hop.host,
+                hop.port,
+            );
+
+            let handle = match prev_handle.take() {
+                None => {
+                    // First hop: regular TCP connect.
+                    client::connect(
+                        pieces.russh_cfg,
+                        (hop.host.as_str(), hop.port),
+                        pieces.handler,
+                    )
+                    .await?
+                }
+                Some(prev) => {
+                    // Subsequent hop: open `direct-tcpip` on the
+                    // previous bastion, treat the channel as the
+                    // transport for the next session.
+                    let channel = prev
+                        .channel_open_direct_tcpip(
+                            hop.host.clone(),
+                            u32::from(hop.port),
+                            "127.0.0.1",
+                            0_u32,
+                        )
+                        .await?;
+                    client::connect_stream(pieces.russh_cfg, channel.into_stream(), pieces.handler)
+                        .await?
+                }
+            };
+
+            // Authenticate this bastion so we can open the next hop's
+            // direct-tcpip channel through it.  Wrap in a temporary
+            // AnvilSession to reuse the existing auth surface.
+            let mut hop_session = Self {
+                handle,
+                auth_banner: pieces.auth_banner,
+                verified_fingerprint: pieces.verified_fingerprint,
+            };
+            hop_session
+                .authenticate_best(&hop_config)
+                .await
+                .map_err(|e| {
+                    e.with_hint(format!(
+                        "ProxyJump: authentication failed at bastion hop {}/{} ({}:{})",
+                        idx + 1,
+                        jumps.len(),
+                        hop.host,
+                        hop.port,
+                    ))
+                })?;
+
+            prev_handle = Some(hop_session.handle);
+        }
+
+        // Final hop: open `direct-tcpip` from the last bastion to the
+        // target, run the SSH handshake over that channel.
+        let prev = prev_handle
+            .expect("loop body ran at least once because jumps is non-empty (checked above)");
+
+        let target_pieces = Self::build_handler_pieces(config)?;
+
+        log::debug!(
+            "session: connecting to target {}:{} via last bastion",
+            config.host,
+            config.port,
+        );
+
+        let channel = prev
+            .channel_open_direct_tcpip(
+                config.host.clone(),
+                u32::from(config.port),
+                "127.0.0.1",
+                0_u32,
+            )
+            .await?;
+        let final_handle = client::connect_stream(
+            target_pieces.russh_cfg,
+            channel.into_stream(),
+            target_pieces.handler,
+        )
+        .await?;
+
+        log::debug!(
+            "session: SSH handshake complete with {} (via {} bastion hop(s))",
+            config.host,
+            jumps.len(),
+        );
+
+        Ok(Self {
+            handle: final_handle,
+            auth_banner: target_pieces.auth_banner,
+            verified_fingerprint: target_pieces.verified_fingerprint,
+        })
+    }
+
     /// Establishes the SSH session over a child process spawned from a
     /// `ProxyCommand` template (FR-55).
     ///
@@ -708,6 +879,41 @@ fn build_russh_config(inactivity_timeout: Duration) -> client::Config {
         },
         ..Default::default()
     }
+}
+
+// ── Jump-host helper (M13.4) ─────────────────────────────────────────────────
+
+/// Builds the per-hop [`AnvilConfig`] used inside
+/// `AnvilSession::connect_via_jump_hosts`.
+///
+/// Inherits security knobs — `strict_host_key_checking`,
+/// `custom_known_hosts`, `verbose` — from the *primary* config so a
+/// user's connection-wide policy (e.g. `--insecure-skip-host-check`)
+/// applies to every hop.  Per-hop fields (`user`, `identity_files`)
+/// come from the [`crate::proxy::JumpHost`] when set, else from the
+/// primary config: a CLI `--user alice` thus propagates to every
+/// bastion that did not override the user in its own `Host` block.
+fn jump_to_config(hop: &crate::proxy::JumpHost, primary: &AnvilConfig) -> AnvilConfig {
+    let mut builder = AnvilConfig::builder(&hop.host)
+        .port(hop.port)
+        .strict_host_key_checking(primary.strict_host_key_checking)
+        .verbose(primary.verbose);
+
+    let username = hop.user.clone().unwrap_or_else(|| primary.username.clone());
+    builder = builder.username(username);
+
+    let identity_files: Vec<_> = if hop.identity_files.is_empty() {
+        primary.identity_files.clone()
+    } else {
+        hop.identity_files.clone()
+    };
+    builder = builder.identity_files(identity_files);
+
+    if let Some(p) = &primary.custom_known_hosts {
+        builder = builder.custom_known_hosts(p.clone());
+    }
+
+    builder.build()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
