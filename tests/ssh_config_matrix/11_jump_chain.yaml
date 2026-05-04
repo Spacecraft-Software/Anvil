@@ -1,0 +1,14 @@
+description: "ProxyJump chain captured raw (M13.3 parser consumes it)"
+
+config: |
+  Host work
+    HostName work.example.com
+    User worker
+    ProxyJump alice@bastion1.example.com:2222,bastion2.example.com
+
+host: work
+
+expected:
+  hostname: work.example.com
+  user: worker
+  proxy_jump: "alice@bastion1.example.com:2222,bastion2.example.com"
