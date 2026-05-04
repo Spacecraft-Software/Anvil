@@ -2,6 +2,12 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.3.1] — 2026-05-04
+
+### Added
+
+- New `diagnostic::emit_for_with_config_sources(&AnvilError, &[PathBuf])` entry point for the M12.8 NFR-24 wiring.  Emits the standard `gitway diag` line plus a `config_source=path1,path2` field listing the `ssh_config(5)` files that were consulted during the failing invocation.  An empty slice produces output identical to [`emit_for`].  Existing `emit` / `emit_for` continue to work unchanged.
+
 ## [0.3.0] — 2026-05-04
 
 ### Added
