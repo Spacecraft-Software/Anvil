@@ -50,6 +50,7 @@ pub mod diagnostic;
 pub mod error;
 pub mod hostkey;
 pub mod keygen;
+pub mod proxy;
 pub mod relay;
 pub mod session;
 pub mod sshsig;
