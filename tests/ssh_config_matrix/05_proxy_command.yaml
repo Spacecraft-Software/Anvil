@@ -1,0 +1,12 @@
+description: "ProxyCommand re-joined with single spaces (M13 will spawn the shell)"
+
+config: |
+  Host work
+    HostName work.example.com
+    ProxyCommand ssh -W %h:%p bastion
+
+host: work
+
+expected:
+  hostname: work.example.com
+  proxy_command: "ssh -W %h:%p bastion"

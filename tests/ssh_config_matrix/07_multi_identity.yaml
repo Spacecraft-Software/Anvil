@@ -1,0 +1,17 @@
+description: "Multiple IdentityFile lines accumulate in source order"
+
+config: |
+  Host gh
+    HostName github.com
+    IdentityFile /tmp/test_id_a
+    IdentityFile /tmp/test_id_b
+    IdentityFile /tmp/test_id_c
+
+host: gh
+
+expected:
+  hostname: github.com
+  identity_files:
+    - /tmp/test_id_a
+    - /tmp/test_id_b
+    - /tmp/test_id_c

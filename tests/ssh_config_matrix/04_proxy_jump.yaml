@@ -1,0 +1,14 @@
+description: "ProxyJump captured raw (M13 will spawn the chain)"
+
+config: |
+  Host work
+    HostName work.example.com
+    User worker
+    ProxyJump bastion.example.com
+
+host: work
+
+expected:
+  hostname: work.example.com
+  user: worker
+  proxy_jump: bastion.example.com

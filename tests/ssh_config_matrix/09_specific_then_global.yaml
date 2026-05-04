@@ -1,0 +1,15 @@
+description: "Host block before Global wildcard wins for the matched host"
+
+# This is the canonical ssh_config(5) layout: per-host overrides at the
+# top, fall-through `Host *` defaults at the bottom.  First-wins means
+# the per-host User wins over the wildcard User.
+config: |
+  Host gh
+    User specificuser
+  Host *
+    User wilduser
+
+host: gh
+
+expected:
+  user: specificuser

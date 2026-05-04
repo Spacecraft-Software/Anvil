@@ -1,0 +1,14 @@
+description: "ConnectTimeout (seconds, M18 will honor)"
+
+config: |
+  Host gh
+    HostName github.com
+    ConnectTimeout 30
+    ConnectionAttempts 5
+
+host: gh
+
+expected:
+  hostname: github.com
+  connect_timeout_secs: 30
+  connection_attempts: 5
