@@ -2,6 +2,25 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.6.0] — 2026-05-04
+
+### Added
+
+- **`tracing` infrastructure for the M15 verbose / JSONL debug surface** — the M15 chapter of [Gitway PRD §5.8.4](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md).  Anvil now emits structured `tracing::*!` events at per-category targets so a downstream consumer (Gitway CLI, integration tests, log aggregators) can install one [`tracing_subscriber::EnvFilter`] and get exactly the depth they want in each category — without scraping log lines.
+  - **New `anvil_ssh::log` module** — public surface: `pub const CAT_KEX = "anvil_ssh::kex"` (and `CAT_AUTH`, `CAT_CHANNEL`, `CAT_CONFIG`); `pub const CATEGORIES: &[&str]` for downstream input validation; `pub fn install_log_bridge() -> Result<(), tracing_log::log_tracer::SetLoggerError>` wraps `tracing_log::LogTracer::init()` with documented idempotency + ordering semantics.  The bridge funnels every existing `log::*!` call (Anvil, russh, ssh-key) through the consumer's `tracing` subscriber, so M15.4 (Gitway CLI) sees one event stream regardless of macro flavor.  Anvil itself does not install a subscriber — that policy belongs to the consumer.
+  - **FR-66 instrumentation across `session.rs`, `auth.rs`, `ssh_config/resolver.rs`, `proxy/jump.rs`, `hostkey.rs`** — every host-key check, every authentication attempt, every applied `~/.ssh/config` directive (with `(file, line, directive, value)`), and every ProxyJump hop now emits a structured `tracing::*!` event.  Same `{host, fp, verdict, …}` shape across all five `check_server_key` outcome paths so a JSONL consumer can group / count.
+
+### Changed
+
+- **`anvil-ssh` minor bump** 0.5.0 → 0.6.0 to signal the new `anvil_ssh::log` module + new public dependency on `tracing` and `tracing-log`.  Pre-1.0 SemVer: 0.5.x consumers must explicitly opt in.
+- **New transitive deps** — `tracing = "0.1"`, `tracing-log = "0.2"`.  Both are MSRV-1.88-clean.
+
+### Notes
+
+- **No subscriber is installed by the library.**  The consumer (Gitway CLI in M15.4) builds an `EnvFilter` from its `-v`/`-vv`/`-vvv` count + `--debug-format` + `--debug-categories` flags and chooses the layer (`fmt::layer()` for human, `fmt::layer().json()` for JSONL).  Library users in test contexts can install `tracing_subscriber::fmt::init()` for a default human formatter.
+- **Existing `log::*!` call sites preserved verbatim.**  ~59 sites across Anvil + russh + ssh-key keep working through the bridge; rewriting them to native `tracing::*!` macros is post-1.0 housekeeping, not an M15 concern.
+- **Public-API additions only** — no breaking changes from 0.5.x.
+
 ## [0.5.0] — 2026-05-04
 
 ### Added
