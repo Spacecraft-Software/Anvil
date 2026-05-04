@@ -29,10 +29,26 @@
 //!
 //! Multiple comma-separated host patterns on one line are split into
 //! multiple entries.  Comment lines (`#`) and blanks are skipped.
-//! Hashed entries (`|1|...|...`) are skipped with a debug log; full
-//! support is documented as a follow-up.
+//!
+//! ## Hashed-host support (M19, FR-84)
+//!
+//! OpenSSH's `HashKnownHosts yes` setting replaces the plaintext host
+//! column with `|1|<base64-salt>|<base64-hmac-sha1>` so that an attacker
+//! who reads the file cannot enumerate which hosts the user has
+//! connected to.  Anvil parses these into [`HashedHost`] values and
+//! stores them on [`KnownHostsFile::hashed`]; the per-entry
+//! [`HashedHost::matches`] method runs HMAC-SHA1 against a candidate
+//! hostname to test for membership at lookup time.  HMAC-SHA1 here is
+//! a *privacy* primitive (file-readable enumeration resistance), not a
+//! *security* primitive — SHA-1 collisions don't matter because the
+//! salt is per-line and 160 bits, the input is a low-entropy hostname,
+//! and the threat model is exactly OpenSSH's: hide the hostname list
+//! from a casual file reader.
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use hmac::{Hmac, Mac};
 use russh::keys::{ssh_key::PublicKey, HashAlg};
+use sha1::Sha1;
 
 use crate::error::AnvilError;
 
@@ -86,6 +102,50 @@ pub struct DirectHostKey {
     pub fingerprint: String,
 }
 
+/// One `HashKnownHosts yes` entry (M19, FR-84).
+///
+/// OpenSSH replaces the plaintext host column with `|1|salt|hash` so a
+/// casual reader of the `known_hosts` file cannot enumerate connected
+/// hosts.  The salt is 20 random bytes (matching HMAC-SHA1's output
+/// width); the hash is `HMAC-SHA1(key=salt, data=hostname)`.  Use
+/// [`HashedHost::matches`] to test a candidate hostname against the
+/// stored hash.
+///
+/// Multiple comma-separated `|1|...` tokens on one source line produce
+/// one [`HashedHost`] per token, all sharing the same `fingerprint`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HashedHost {
+    /// Per-line random salt used as the HMAC-SHA1 key.  Always 20 bytes.
+    pub salt: [u8; 20],
+    /// `HMAC-SHA1(salt, hostname)` for the hostname this entry covers.
+    /// Always 20 bytes.
+    pub hash: [u8; 20],
+    /// Fingerprint of the host key, e.g. `SHA256:uNiVztksCs...`.
+    /// Shared across every [`HashedHost`] derived from the same source
+    /// line.
+    pub fingerprint: String,
+}
+
+impl HashedHost {
+    /// Returns `true` iff `host` is the hostname this entry encodes.
+    ///
+    /// Runs `HMAC-SHA1(self.salt, host.as_bytes())` and compares against
+    /// the stored hash with constant-time equality (via `HMAC::verify`,
+    /// which uses [`subtle`] internally).  False on mismatch — never
+    /// errors.
+    #[must_use]
+    pub fn matches(&self, host: &str) -> bool {
+        let Ok(mut mac) = <Hmac<Sha1>>::new_from_slice(&self.salt) else {
+            // `new_from_slice` only fails on key-length restrictions
+            // that HMAC-SHA1 does not enforce, so this branch is
+            // effectively dead.  Defensive return rather than panic.
+            return false;
+        };
+        mac.update(host.as_bytes());
+        mac.verify_slice(&self.hash).is_ok()
+    }
+}
+
 /// Fully-parsed view of one `known_hosts`-style file.
 ///
 /// Returned by [`parse_known_hosts`].  Empty vectors are the natural
@@ -95,6 +155,10 @@ pub struct KnownHostsFile {
     pub direct: Vec<DirectHostKey>,
     pub cert_authorities: Vec<CertAuthority>,
     pub revoked: Vec<RevokedEntry>,
+    /// Hashed direct entries (M19, FR-84).  Use
+    /// [`HashedHost::matches`] to query by candidate hostname; the
+    /// vector itself preserves source order.
+    pub hashed: Vec<HashedHost>,
 }
 
 /// Parses `content` (the contents of a `known_hosts`-style file) into
@@ -119,13 +183,6 @@ pub fn parse_known_hosts(content: &str) -> Result<KnownHostsFile, AnvilError> {
         }
         let line_no = idx + 1;
 
-        if line.starts_with("|1|") {
-            log::debug!(
-                "known_hosts: line {line_no} is a hashed entry; skipping (not yet supported)"
-            );
-            continue;
-        }
-
         if let Some(rest) = strip_marker_ci(line, "@cert-authority") {
             parse_cert_authority_line(rest, line_no, &mut out)?;
             continue;
@@ -135,7 +192,9 @@ pub fn parse_known_hosts(content: &str) -> Result<KnownHostsFile, AnvilError> {
             continue;
         }
 
-        // Plain direct line: `host[,host2,…] SHA256:fp`.
+        // Direct line (plaintext or hashed): `host[,host2,…] SHA256:fp`.
+        // Each comma-separated host token is classified independently
+        // — `|1|salt|hash` tokens land in `hashed`, others in `direct`.
         let mut parts = line.splitn(2, char::is_whitespace);
         let Some(host_part) = parts.next() else {
             continue;
@@ -147,15 +206,49 @@ pub fn parse_known_hosts(content: &str) -> Result<KnownHostsFile, AnvilError> {
         if fp.is_empty() {
             continue;
         }
-        for host in split_host_patterns(host_part) {
-            out.direct.push(DirectHostKey {
-                host_pattern: host,
-                fingerprint: fp.to_owned(),
-            });
+        for host_token in split_host_patterns(host_part) {
+            if host_token.starts_with("|1|") {
+                match parse_hashed_token(&host_token) {
+                    Some((salt, hash)) => {
+                        out.hashed.push(HashedHost {
+                            salt,
+                            hash,
+                            fingerprint: fp.to_owned(),
+                        });
+                    }
+                    None => {
+                        log::warn!(
+                            "known_hosts: line {line_no}: malformed hashed token '{host_token}'; \
+                             skipping (expected '|1|<base64-salt>|<base64-hash>')",
+                        );
+                    }
+                }
+            } else {
+                out.direct.push(DirectHostKey {
+                    host_pattern: host_token,
+                    fingerprint: fp.to_owned(),
+                });
+            }
         }
     }
 
     Ok(out)
+}
+
+/// Decodes a single `|1|<base64-salt>|<base64-hash>` token into its
+/// 20-byte salt + 20-byte hash components.
+///
+/// Returns `None` for any deviation from the expected form: missing
+/// `|1|` prefix, missing inner `|` separator, base64 decode failure,
+/// or wrong byte length.  Callers log + skip on `None`.
+fn parse_hashed_token(token: &str) -> Option<([u8; 20], [u8; 20])> {
+    let rest = token.strip_prefix("|1|")?;
+    let (salt_b64, hash_b64) = rest.split_once('|')?;
+    let salt_bytes = BASE64.decode(salt_b64.as_bytes()).ok()?;
+    let hash_bytes = BASE64.decode(hash_b64.as_bytes()).ok()?;
+    let salt: [u8; 20] = salt_bytes.try_into().ok()?;
+    let hash: [u8; 20] = hash_bytes.try_into().ok()?;
+    Some((salt, hash))
 }
 
 /// Returns the rest of `line` after `marker`, but only if `marker`
