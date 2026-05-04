@@ -27,7 +27,9 @@
 
 use std::path::Path;
 
+use crate::cert_authority::{parse_known_hosts, CertAuthority, KnownHostsFile, RevokedEntry};
 use crate::error::AnvilError;
+use crate::ssh_config::lexer::wildcard_match;
 
 // ── Well-known host constants ─────────────────────────────────────────────────
 
@@ -217,6 +219,111 @@ pub fn fingerprints_for_host(
     Ok(fps)
 }
 
+// ── M14: combined trust view (FR-60, FR-64) ──────────────────────────────────
+
+/// Combined view of every `known_hosts` entry that bears on the
+/// connection target.
+///
+/// Returned by [`host_key_trust`].  A connection target's effective
+/// trust is the union of:
+///
+/// - `fingerprints` — direct SHA-256 pins (embedded + custom-file).
+///   Identical to what [`fingerprints_for_host`] returns.
+/// - `cert_authorities` — `@cert-authority` entries whose host pattern
+///   matches the target.  Live cert verification (FR-61, FR-62, FR-63)
+///   is deferred until russh exposes the server's certificate; the
+///   field is populated today so `gitway config show --json` and
+///   audit tooling can surface CA identities.
+/// - `revoked` — `@revoked` entries whose host pattern matches.
+///   Enforced first in
+///   [`crate::session::AnvilSession::connect`]'s host-key check: any
+///   presented key whose fingerprint hits one of these is rejected
+///   regardless of `StrictHostKeyChecking` policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostKeyTrust {
+    pub fingerprints: Vec<String>,
+    pub cert_authorities: Vec<CertAuthority>,
+    pub revoked: Vec<RevokedEntry>,
+}
+
+/// Returns the [`HostKeyTrust`] for `host`, combining the embedded
+/// fingerprint set, any direct pins / `@cert-authority` / `@revoked`
+/// lines from the user-supplied or default `known_hosts` file, and
+/// pattern-matching for the cert-authority + revoked classes.
+///
+/// Unlike [`fingerprints_for_host`], an empty trust set is **not** an
+/// error — the caller decides whether the absence is fatal (the
+/// `StrictHostKeyChecking::AcceptNew` path tolerates an empty set; the
+/// `Yes` path does not).
+///
+/// # Errors
+/// [`AnvilError::invalid_config`] when the known-hosts file exists but
+/// fails to parse (a malformed `@cert-authority` line, for instance).
+/// File-not-found is silently treated as no entries.
+pub fn host_key_trust(
+    host: &str,
+    custom_path: &Option<std::path::PathBuf>,
+) -> Result<HostKeyTrust, AnvilError> {
+    let mut trust = HostKeyTrust {
+        fingerprints: embedded_fingerprints(host),
+        cert_authorities: Vec::new(),
+        revoked: Vec::new(),
+    };
+
+    let known_hosts_path = custom_path.clone().or_else(default_known_hosts_path);
+    let Some(path) = known_hosts_path else {
+        return Ok(trust);
+    };
+    if !path.exists() {
+        return Ok(trust);
+    }
+
+    let content = std::fs::read_to_string(&path).map_err(|e| {
+        AnvilError::invalid_config(format!(
+            "could not read known_hosts {}: {e}",
+            path.display(),
+        ))
+    })?;
+    let parsed: KnownHostsFile = parse_known_hosts(&content)?;
+
+    for direct in parsed.direct {
+        if wildcard_match(&direct.host_pattern, host) {
+            trust.fingerprints.push(direct.fingerprint);
+        }
+    }
+    for ca in parsed.cert_authorities {
+        if wildcard_match(&ca.host_pattern, host) {
+            trust.cert_authorities.push(ca);
+        }
+    }
+    for rev in parsed.revoked {
+        if wildcard_match(&rev.host_pattern, host) {
+            trust.revoked.push(rev);
+        }
+    }
+
+    Ok(trust)
+}
+
+/// Returns the embedded SHA-256 fingerprints for the listed
+/// well-known hosts.  Internal helper used by both
+/// [`fingerprints_for_host`] and [`host_key_trust`].
+fn embedded_fingerprints(host: &str) -> Vec<String> {
+    match host {
+        "github.com" | "ssh.github.com" => {
+            GITHUB_FINGERPRINTS.iter().map(|&s| s.to_owned()).collect()
+        }
+        "gitlab.com" | "altssh.gitlab.com" => {
+            GITLAB_FINGERPRINTS.iter().map(|&s| s.to_owned()).collect()
+        }
+        "codeberg.org" => CODEBERG_FINGERPRINTS
+            .iter()
+            .map(|&s| s.to_owned())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Appends `host SHA256:<fingerprint>` as a new line to the `known_hosts`
 /// file at `path`, creating the file (and any missing parent directories)
 /// if needed.
@@ -333,5 +440,85 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("git.example.com"));
+    }
+
+    // ── M14: host_key_trust ──────────────────────────────────────────────────
+
+    /// Helper: write `content` to a fresh temp file and return its path.
+    fn write_known_hosts(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("known_hosts");
+        std::fs::write(&path, content).expect("write");
+        (dir, path)
+    }
+
+    #[test]
+    fn host_key_trust_embeds_well_known_fingerprints() {
+        let trust = host_key_trust("github.com", &None).expect("trust");
+        assert_eq!(trust.fingerprints.len(), 3);
+        assert!(trust.cert_authorities.is_empty());
+        assert!(trust.revoked.is_empty());
+    }
+
+    #[test]
+    fn host_key_trust_pattern_matches_cert_authority() {
+        let (_g, path) = write_known_hosts(
+            "@cert-authority *.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILM+rvN+ot98qgEN796jTiQfZfG1KaT0PtFDJ/XFSqti ca\n",
+        );
+        let trust = host_key_trust("foo.example.com", &Some(path)).expect("trust");
+        assert_eq!(trust.cert_authorities.len(), 1);
+        assert_eq!(trust.cert_authorities[0].host_pattern, "*.example.com");
+    }
+
+    #[test]
+    fn host_key_trust_pattern_excludes_non_match() {
+        let (_g, path) = write_known_hosts(
+            "@cert-authority *.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILM+rvN+ot98qgEN796jTiQfZfG1KaT0PtFDJ/XFSqti ca\n",
+        );
+        let trust = host_key_trust("other.org", &Some(path)).expect("trust");
+        assert!(trust.cert_authorities.is_empty());
+    }
+
+    #[test]
+    fn host_key_trust_revoked_pattern_matches() {
+        let (_g, path) = write_known_hosts(
+            "@revoked *.example.com SHA256:revokedfp\n\
+             @revoked unrelated.com SHA256:other\n",
+        );
+        let trust = host_key_trust("foo.example.com", &Some(path)).expect("trust");
+        assert_eq!(trust.revoked.len(), 1);
+        assert_eq!(trust.revoked[0].fingerprint, "SHA256:revokedfp");
+    }
+
+    #[test]
+    fn host_key_trust_combines_direct_and_embedded() {
+        let (_g, path) = write_known_hosts("github.com SHA256:extra-pin\n");
+        let trust = host_key_trust("github.com", &Some(path)).expect("trust");
+        // Three embedded + one extra direct.
+        assert_eq!(trust.fingerprints.len(), 4);
+        assert!(trust.fingerprints.contains(&"SHA256:extra-pin".to_owned()));
+    }
+
+    #[test]
+    fn host_key_trust_missing_file_returns_embedded_only() {
+        let trust = host_key_trust(
+            "github.com",
+            &Some(std::path::PathBuf::from("/this/path/does/not/exist")),
+        )
+        .expect("trust");
+        assert_eq!(trust.fingerprints.len(), 3);
+        assert!(trust.cert_authorities.is_empty());
+        assert!(trust.revoked.is_empty());
+    }
+
+    #[test]
+    fn host_key_trust_empty_for_unknown_host_no_file() {
+        // Unlike `fingerprints_for_host`, `host_key_trust` does NOT
+        // error on an empty trust set — that is the caller's policy
+        // call.  This is the path the AcceptNew policy relies on.
+        let trust = host_key_trust("git.example.com", &None).expect("trust");
+        assert!(trust.fingerprints.is_empty());
+        assert!(trust.cert_authorities.is_empty());
+        assert!(trust.revoked.is_empty());
     }
 }
