@@ -45,6 +45,7 @@
 pub mod agent;
 pub mod allowed_signers;
 pub mod auth;
+pub mod cert_authority;
 pub mod config;
 pub mod diagnostic;
 pub mod error;
