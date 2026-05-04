@@ -12,7 +12,6 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use russh::client;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg};
@@ -274,7 +273,7 @@ impl AnvilSession {
     /// when a writable `custom_known_hosts` path is set) and the shared
     /// `auth_banner` / `verified_fingerprint` mutex pair.
     fn build_handler_pieces(config: &AnvilConfig) -> Result<HandlerPieces, AnvilError> {
-        let russh_cfg = Arc::new(build_russh_config(config.inactivity_timeout));
+        let russh_cfg = Arc::new(build_russh_config(config));
         // M14: pull the trust view (direct fingerprints + revoked
         // entries) in one pass.  For
         // `StrictHostKeyChecking::AcceptNew` with a writable
@@ -1003,31 +1002,149 @@ impl AnvilSession {
 
 // ── russh config builder ──────────────────────────────────────────────────────
 
-/// Constructs a russh [`client::Config`] with Gitway's preferred algorithms.
+/// Constructs a russh [`client::Config`] with Gitway's preferred
+/// algorithms — sourced from `config`'s per-category preferences
+/// (M17, PRD §5.8.6 FR-76) when set, falling back to Anvil's curated
+/// defaults otherwise.
 ///
 /// Algorithm preferences (FR-2, FR-3, FR-4):
 /// - Key exchange: `curve25519-sha256` (RFC 8731) with
 ///   `curve25519-sha256@libssh.org` as fallback.
 /// - Cipher: `chacha20-poly1305@openssh.com`.
 /// - `ext-info-c` advertises server-sig-algs extension support.
-fn build_russh_config(inactivity_timeout: Duration) -> client::Config {
+///
+/// CLI overrides (`--kex` / `--ciphers` / `--macs` /
+/// `--host-key-algorithms`) populate `config.{kex_algorithms,
+/// ciphers, macs, host_key_algorithms}` — already filtered through
+/// [`crate::algorithms::apply_overrides`] (so the FR-78 denylist is
+/// applied).  Unknown algorithm strings (names russh doesn't have a
+/// constant for) are silently dropped here because russh's `Name`
+/// types only accept `&'static str`; a future v1.1 may surface
+/// these via a hard error at the override-validation stage.
+fn build_russh_config(config: &AnvilConfig) -> client::Config {
+    let kex_strings = config
+        .kex_algorithms
+        .clone()
+        .unwrap_or_else(crate::algorithms::anvil_default_kex);
+    let cipher_strings = config
+        .ciphers
+        .clone()
+        .unwrap_or_else(crate::algorithms::anvil_default_ciphers);
+    let mac_strings = config
+        .macs
+        .clone()
+        .unwrap_or_else(crate::algorithms::anvil_default_macs);
+    let host_key_strings = config
+        .host_key_algorithms
+        .clone()
+        .unwrap_or_else(crate::algorithms::anvil_default_host_keys);
+
+    // FR-66 (M15) / M17 instrumentation: emit the offered
+    // preference vectors at trace level under `CAT_KEX` so a
+    // `gitway -vvv --debug-categories=kex` consumer sees what was
+    // sent before the negotiation event from M15.2 fires.
+    tracing::trace!(
+        target: crate::log::CAT_KEX,
+        kex = ?kex_strings,
+        cipher = ?cipher_strings,
+        mac = ?mac_strings,
+        host_key = ?host_key_strings,
+        "negotiating with offered algorithm sets",
+    );
+
+    let kex_list: Vec<kex::Name> = kex_strings
+        .iter()
+        .filter_map(|s| russh_kex_name(s))
+        .collect();
+    let cipher_list: Vec<cipher::Name> = cipher_strings
+        .iter()
+        .filter_map(|s| russh_cipher_name(s))
+        .collect();
+    let mac_list: Vec<russh::mac::Name> = mac_strings
+        .iter()
+        .filter_map(|s| russh_mac_name(s))
+        .collect();
+    // Host-key uses russh::keys::Algorithm (an enum) which has a
+    // FromStr impl that round-trips unknown names via Algorithm::Other.
+    let host_key_list: Vec<russh::keys::Algorithm> = host_key_strings
+        .iter()
+        .filter_map(|s| s.parse::<russh::keys::Algorithm>().ok())
+        .collect();
+
     client::Config {
         // 60 s matches GitHub's server-side idle threshold.
         // Lowering below ~10 s risks spurious timeouts on high-latency links.
-        inactivity_timeout: Some(inactivity_timeout),
+        inactivity_timeout: Some(config.inactivity_timeout),
         preferred: Preferred {
-            kex: Cow::Owned(vec![
-                kex::CURVE25519,                  // curve25519-sha256 (RFC 8731)
-                kex::CURVE25519_PRE_RFC_8731,     // curve25519-sha256@libssh.org
-                kex::EXTENSION_SUPPORT_AS_CLIENT, // ext-info-c (FR-4)
-            ]),
-            cipher: Cow::Owned(vec![
-                cipher::CHACHA20_POLY1305, // chacha20-poly1305@openssh.com (FR-3)
-            ]),
+            kex: Cow::Owned(kex_list),
+            cipher: Cow::Owned(cipher_list),
+            mac: Cow::Owned(mac_list),
+            key: Cow::Owned(host_key_list),
             ..Default::default()
         },
         ..Default::default()
     }
+}
+
+/// Maps a kex algorithm name string to the matching `russh::kex::Name`
+/// constant, or `None` for unknown names.  Russh's `Name` types wrap
+/// `&'static str`, so we cannot construct them from owned strings —
+/// only the published constants work.  Unknown names land outside
+/// this lookup and are silently dropped from the negotiation set.
+fn russh_kex_name(s: &str) -> Option<kex::Name> {
+    let s = s.trim();
+    Some(match s {
+        "curve25519-sha256" => kex::CURVE25519,
+        "curve25519-sha256@libssh.org" => kex::CURVE25519_PRE_RFC_8731,
+        "diffie-hellman-group-exchange-sha256" => kex::DH_GEX_SHA256,
+        "diffie-hellman-group-exchange-sha1" => kex::DH_GEX_SHA1,
+        "diffie-hellman-group1-sha1" => kex::DH_G1_SHA1,
+        "diffie-hellman-group14-sha1" => kex::DH_G14_SHA1,
+        "diffie-hellman-group14-sha256" => kex::DH_G14_SHA256,
+        "diffie-hellman-group15-sha512" => kex::DH_G15_SHA512,
+        "diffie-hellman-group16-sha512" => kex::DH_G16_SHA512,
+        "diffie-hellman-group17-sha512" => kex::DH_G17_SHA512,
+        "diffie-hellman-group18-sha512" => kex::DH_G18_SHA512,
+        "ext-info-c" => kex::EXTENSION_SUPPORT_AS_CLIENT,
+        _ => return None,
+    })
+}
+
+/// Maps a cipher algorithm name string to the matching
+/// `russh::cipher::Name` constant.  See [`russh_kex_name`] for the
+/// `&'static str` rationale.
+fn russh_cipher_name(s: &str) -> Option<cipher::Name> {
+    let s = s.trim();
+    Some(match s {
+        "chacha20-poly1305@openssh.com" => cipher::CHACHA20_POLY1305,
+        "aes128-ctr" => cipher::AES_128_CTR,
+        "aes192-ctr" => cipher::AES_192_CTR,
+        "aes256-ctr" => cipher::AES_256_CTR,
+        "aes128-cbc" => cipher::AES_128_CBC,
+        "aes192-cbc" => cipher::AES_192_CBC,
+        "aes256-cbc" => cipher::AES_256_CBC,
+        "aes128-gcm@openssh.com" => cipher::AES_128_GCM,
+        "aes256-gcm@openssh.com" => cipher::AES_256_GCM,
+        // Note: cipher::TRIPLE_DES_CBC is intentionally NOT mapped.
+        // Even if a buggy upstream override slipped a "3des-cbc"
+        // past the FR-78 denylist, this lookup would still drop it.
+        _ => return None,
+    })
+}
+
+/// Maps a MAC algorithm name string to the matching
+/// `russh::mac::Name` constant.
+fn russh_mac_name(s: &str) -> Option<russh::mac::Name> {
+    let s = s.trim();
+    Some(match s {
+        "hmac-sha2-512-etm@openssh.com" => russh::mac::HMAC_SHA512_ETM,
+        "hmac-sha2-256-etm@openssh.com" => russh::mac::HMAC_SHA256_ETM,
+        "hmac-sha1-etm@openssh.com" => russh::mac::HMAC_SHA1_ETM,
+        "hmac-sha2-512" => russh::mac::HMAC_SHA512,
+        "hmac-sha2-256" => russh::mac::HMAC_SHA256,
+        "hmac-sha1" => russh::mac::HMAC_SHA1,
+        _ => return None,
+    })
 }
 
 // ── Jump-host helper (M13.4) ─────────────────────────────────────────────────
@@ -1079,7 +1196,8 @@ mod tests {
     /// cannot be selected even if the server offers it.
     #[test]
     fn config_cipher_excludes_3des() {
-        let config = build_russh_config(Duration::from_secs(60));
+        let anvil_config = AnvilConfig::builder("test.example").build();
+        let config = build_russh_config(&anvil_config);
         let found = config
             .preferred
             .cipher
@@ -1099,7 +1217,8 @@ mod tests {
     fn config_key_algorithms_exclude_dsa() {
         use russh::keys::Algorithm;
 
-        let config = build_russh_config(Duration::from_secs(60));
+        let anvil_config = AnvilConfig::builder("test.example").build();
+        let config = build_russh_config(&anvil_config);
         assert!(
             !config.preferred.key.contains(&Algorithm::Dsa),
             "DSA must not appear in the key-algorithm list (NFR-6)"
@@ -1111,7 +1230,8 @@ mod tests {
     /// curve25519-sha256 must be in the kex list (FR-2).
     #[test]
     fn config_kex_includes_curve25519() {
-        let config = build_russh_config(Duration::from_secs(60));
+        let anvil_config = AnvilConfig::builder("test.example").build();
+        let config = build_russh_config(&anvil_config);
         let found = config
             .preferred
             .kex
@@ -1123,7 +1243,8 @@ mod tests {
     /// chacha20-poly1305@openssh.com must be in the cipher list (FR-3).
     #[test]
     fn config_cipher_includes_chacha20_poly1305() {
-        let config = build_russh_config(Duration::from_secs(60));
+        let anvil_config = AnvilConfig::builder("test.example").build();
+        let config = build_russh_config(&anvil_config);
         let found = config
             .preferred
             .cipher

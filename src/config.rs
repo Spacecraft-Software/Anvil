@@ -91,6 +91,23 @@ pub struct AnvilConfig {
     /// GitHub: `ssh.github.com:443`. GitLab: `altssh.gitlab.com:443`.
     /// Codeberg has no published port-443 fallback.
     pub fallback: Option<(String, u16)>,
+    /// Key-exchange algorithm preference (PRD §5.8.6 FR-76).
+    ///
+    /// `None` selects [`crate::algorithms::anvil_default_kex`] — the
+    /// curated default.  `Some(list)` overrides; the list has
+    /// already passed through
+    /// [`crate::algorithms::apply_overrides`] (so any `+`/`-`/`^`
+    /// prefix has been resolved and the FR-78 denylist applied).
+    pub kex_algorithms: Option<Vec<String>>,
+    /// Cipher preference (PRD §5.8.6 FR-76).  `None` → curated default.
+    pub ciphers: Option<Vec<String>>,
+    /// MAC preference (PRD §5.8.6 FR-76).  `None` → curated default.
+    /// Mostly cosmetic for AEAD ciphers (chacha20-poly1305, AES-GCM)
+    /// since they carry their own auth tag.
+    pub macs: Option<Vec<String>>,
+    /// Host-key algorithm preference (PRD §5.8.6 FR-76).  `None` →
+    /// curated default.
+    pub host_key_algorithms: Option<Vec<String>>,
 }
 
 impl AnvilConfig {
@@ -170,6 +187,10 @@ pub struct AnvilConfigBuilder {
     custom_known_hosts: Option<PathBuf>,
     verbose: bool,
     fallback: Option<(String, u16)>,
+    kex_algorithms: Option<Vec<String>>,
+    ciphers: Option<Vec<String>>,
+    macs: Option<Vec<String>>,
+    host_key_algorithms: Option<Vec<String>>,
 }
 
 impl AnvilConfigBuilder {
@@ -190,6 +211,14 @@ impl AnvilConfigBuilder {
             // No fallback by default; provider-specific convenience
             // constructors set this when a known fallback exists.
             fallback: None,
+            // Algorithm preferences default to None (= use the
+            // curated `algorithms::anvil_default_*` lists at session
+            // build time).  M17.4 CLI flags overwrite these via the
+            // four setters below.
+            kex_algorithms: None,
+            ciphers: None,
+            macs: None,
+            host_key_algorithms: None,
         }
     }
 
@@ -292,6 +321,36 @@ impl AnvilConfigBuilder {
         self
     }
 
+    /// Override the key-exchange algorithm preference (PRD §5.8.6 FR-76).
+    ///
+    /// Pass `None` to keep the curated default
+    /// ([`crate::algorithms::anvil_default_kex`]).  The list is
+    /// expected to have already passed through
+    /// [`crate::algorithms::apply_overrides`] so any
+    /// `+`/`-`/`^` prefix is resolved and the FR-78 denylist applied.
+    pub fn kex_algorithms(mut self, list: Option<Vec<String>>) -> Self {
+        self.kex_algorithms = list;
+        self
+    }
+
+    /// Override the cipher preference (PRD §5.8.6 FR-76).
+    pub fn ciphers(mut self, list: Option<Vec<String>>) -> Self {
+        self.ciphers = list;
+        self
+    }
+
+    /// Override the MAC preference (PRD §5.8.6 FR-76).
+    pub fn macs(mut self, list: Option<Vec<String>>) -> Self {
+        self.macs = list;
+        self
+    }
+
+    /// Override the host-key algorithm preference (PRD §5.8.6 FR-76).
+    pub fn host_key_algorithms(mut self, list: Option<Vec<String>>) -> Self {
+        self.host_key_algorithms = list;
+        self
+    }
+
     /// Layer values from a [`ResolvedSshConfig`] into this builder.
     ///
     /// Provides ssh_config-derived defaults that subsequent builder calls
@@ -308,10 +367,23 @@ impl AnvilConfigBuilder {
     /// | `UserKnownHostsFile` (first) | `custom_known_hosts` (filled if `None`) |
     ///
     /// Algorithm directives (`HostKeyAlgorithms`, `KexAlgorithms`,
-    /// `Ciphers`, `MACs`) and `ConnectTimeout` / `ConnectionAttempts` are
-    /// not yet plumbed through to the session builder; they are recorded
-    /// in [`ResolvedSshConfig`] for `gitway config show` but consumption
-    /// is deferred to M17 / M18.
+    /// `Ciphers`, `MACs`) are honored as of M17 (PRD §5.8.6 FR-76):
+    /// each parsed `AlgList` is fed through
+    /// [`crate::algorithms::apply_overrides`] against the matching
+    /// curated default, so an `ssh_config` value of `+algo,algo`
+    /// appends to Anvil's defaults rather than replacing them.
+    /// `ConnectTimeout` / `ConnectionAttempts` remain deferred to
+    /// M18.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible by signature, but a malformed
+    /// algorithm list (denylisted entry referenced by an override)
+    /// is logged at `warn` level and silently dropped — the
+    /// connection then falls back to the curated default.  Callers
+    /// who want strict validation should run the same value
+    /// through [`crate::algorithms::apply_overrides`] explicitly
+    /// before calling here.
     pub fn apply_ssh_config(mut self, resolved: &ResolvedSshConfig) -> Self {
         if let Some(hostname) = &resolved.hostname {
             self.host.clone_from(hostname);
@@ -332,8 +404,64 @@ impl AnvilConfigBuilder {
                 self.custom_known_hosts = Some(p.clone());
             }
         }
+        // M17 / FR-76: plumb algorithm directives through the
+        // `+`/`-`/`^` parser against Anvil's curated defaults.  CLI
+        // overrides applied AFTER `apply_ssh_config` win over the
+        // ssh_config-derived value (matches OpenSSH precedence).
+        self.apply_alg_directive(
+            crate::algorithms::AlgCategory::Kex,
+            resolved.kex_algorithms.as_ref(),
+            crate::algorithms::anvil_default_kex,
+            |b, v| b.kex_algorithms = Some(v),
+        );
+        self.apply_alg_directive(
+            crate::algorithms::AlgCategory::Cipher,
+            resolved.ciphers.as_ref(),
+            crate::algorithms::anvil_default_ciphers,
+            |b, v| b.ciphers = Some(v),
+        );
+        self.apply_alg_directive(
+            crate::algorithms::AlgCategory::Mac,
+            resolved.macs.as_ref(),
+            crate::algorithms::anvil_default_macs,
+            |b, v| b.macs = Some(v),
+        );
+        self.apply_alg_directive(
+            crate::algorithms::AlgCategory::HostKey,
+            resolved.host_key_algorithms.as_ref(),
+            crate::algorithms::anvil_default_host_keys,
+            |b, v| b.host_key_algorithms = Some(v),
+        );
         warn_unhonored_directives(resolved);
         self
+    }
+
+    /// Internal helper for `apply_ssh_config`.  Reads one algorithm
+    /// directive from the resolved config, runs it through
+    /// `apply_overrides` against the curated default, and stores the
+    /// result via `setter`.  Malformed values (denylisted entries)
+    /// log a warning and leave the field on its `None` default so
+    /// the curated list is used at session-build time.
+    fn apply_alg_directive(
+        &mut self,
+        category: crate::algorithms::AlgCategory,
+        directive: Option<&crate::ssh_config::AlgList>,
+        default_fn: fn() -> Vec<String>,
+        setter: fn(&mut Self, Vec<String>),
+    ) {
+        let Some(crate::ssh_config::AlgList(value)) = directive else {
+            return;
+        };
+        match crate::algorithms::apply_overrides(category, default_fn(), value) {
+            Ok(list) => setter(self, list),
+            Err(e) => {
+                log::warn!(
+                    "ssh_config {category} directive '{value}' rejected: {e} \
+                     (falling back to Anvil curated default)",
+                    category = category.label(),
+                );
+            }
+        }
     }
 
     // (Unhonored-directives warning helper lives below `impl` block.)
@@ -352,6 +480,10 @@ impl AnvilConfigBuilder {
             custom_known_hosts: self.custom_known_hosts,
             verbose: self.verbose,
             fallback: self.fallback,
+            kex_algorithms: self.kex_algorithms,
+            ciphers: self.ciphers,
+            macs: self.macs,
+            host_key_algorithms: self.host_key_algorithms,
         }
     }
 }
@@ -362,29 +494,14 @@ impl AnvilConfigBuilder {
 /// when a config is actually being prepared for connection — `gitway
 /// config show` and similar inspection callers do not trigger it.
 ///
-/// The split:
-/// - `HostKeyAlgorithms`, `KexAlgorithms`, `Ciphers`, `MACs` — parsed
-///   into [`ResolvedSshConfig`] for `gitway config show`, but
-///   [`crate::session::build_russh_config`] uses hardcoded preferences
-///   today.  M17 plumbs the `+`/`-`/`^` modifier semantics through to
-///   russh's preference list.
+/// The remaining unhonored set after M17:
 /// - `ConnectTimeout`, `ConnectionAttempts` — parsed but not yet wired
 ///   into `connect()`.  M18 honors them.
+///
+/// `HostKeyAlgorithms` / `KexAlgorithms` / `Ciphers` / `MACs` were
+/// the M17 deferral; they're now consumed by `apply_ssh_config` via
+/// the `apply_alg_directive` helper above.
 fn warn_unhonored_directives(resolved: &ResolvedSshConfig) {
-    let mut m17: Vec<&'static str> = Vec::new();
-    if resolved.host_key_algorithms.is_some() {
-        m17.push("HostKeyAlgorithms");
-    }
-    if resolved.kex_algorithms.is_some() {
-        m17.push("KexAlgorithms");
-    }
-    if resolved.ciphers.is_some() {
-        m17.push("Ciphers");
-    }
-    if resolved.macs.is_some() {
-        m17.push("MACs");
-    }
-
     let mut m18: Vec<&'static str> = Vec::new();
     if resolved.connect_timeout.is_some() {
         m18.push("ConnectTimeout");
@@ -393,14 +510,6 @@ fn warn_unhonored_directives(resolved: &ResolvedSshConfig) {
         m18.push("ConnectionAttempts");
     }
 
-    if !m17.is_empty() {
-        log::warn!(
-            "ssh_config: directive(s) {} parsed but not yet honored \
-             (landing in M17 — Gitway PRD §8); current connections use \
-             Anvil's hardcoded algorithm preferences",
-            m17.join(", "),
-        );
-    }
     if !m18.is_empty() {
         log::warn!(
             "ssh_config: directive(s) {} parsed but not yet honored \
