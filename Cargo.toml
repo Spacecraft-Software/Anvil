@@ -65,6 +65,10 @@ harness = false
 name    = "ssh_config_latency"
 harness = false
 
+[[bench]]
+name    = "proxy_chain"
+harness = false
+
 # ── Lints ─────────────────────────────────────────────────────────────────────
 
 [lints.rust]
