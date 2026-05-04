@@ -242,6 +242,13 @@ pub struct AnvilSession {
     auth_banner: Arc<Mutex<Option<String>>>,
     /// SHA-256 fingerprint of the server key that passed verification, if any.
     verified_fingerprint: Arc<Mutex<Option<String>>>,
+    /// Per-attempt history captured by [`crate::retry::run`] during
+    /// the connect path (M18, FR-83).  Empty when the first attempt
+    /// succeeded; otherwise one entry per failed attempt that
+    /// triggered a retry, plus the final attempt that succeeded.
+    /// Surfaced via [`Self::retry_history`] for the
+    /// `gitway --test --json` envelope.
+    retry_history: Vec<crate::retry::RetryAttempt>,
 }
 
 /// Manual Debug impl because `client::Handle<H>` does not implement `Debug`.
@@ -345,20 +352,55 @@ impl AnvilSession {
     /// Does **not** authenticate; call [`authenticate`](Self::authenticate) or
     /// [`authenticate_best`](Self::authenticate_best) after this.
     ///
+    /// **M18 / FR-80 / FR-81 / FR-82**: the TCP connect is wrapped in
+    /// a [`crate::retry::run`] loop with per-attempt
+    /// [`tokio::time::timeout`] (when `config.connect_timeout` is
+    /// `Some`).  Transient failures (`ECONNREFUSED`, `ETIMEDOUT`,
+    /// DNS NXDOMAIN, …) are retried with jittered exponential
+    /// backoff; auth / host-key / protocol errors are fatal and
+    /// surface immediately.  See [`Self::retry_history`] for the
+    /// per-attempt history captured during the loop.
+    ///
     /// # Errors
     ///
-    /// Returns an error on network failure or if the server's host key does not
-    /// match any pinned fingerprint.
+    /// Returns an error on terminal network failure (after exhausting
+    /// the retry budget) or if the server's host key does not
+    /// match any pinned fingerprint (fatal — never retried).
     pub async fn connect(config: &AnvilConfig) -> Result<Self, AnvilError> {
-        let pieces = Self::build_handler_pieces(config)?;
+        let policy = retry_policy_from_config(config);
 
         log::debug!("session: connecting to {}:{}", config.host, config.port);
 
-        let handle = client::connect(
-            pieces.russh_cfg,
-            (config.host.as_str(), config.port),
-            pieces.handler,
-        )
+        // Each attempt rebuilds `pieces` because russh's
+        // `client::connect` consumes the handler.  This is cheap —
+        // `build_handler_pieces` is pure setup, no I/O.
+        let ((handle, pieces), retry_history) = crate::retry::run(&policy, || async {
+            let pieces = Self::build_handler_pieces(config)?;
+            let connect_fut = client::connect(
+                pieces.russh_cfg,
+                (config.host.as_str(), config.port),
+                pieces.handler,
+            );
+            let handle = match policy.connect_timeout {
+                Some(t) => match tokio::time::timeout(t, connect_fut).await {
+                    Ok(Ok(h)) => h,
+                    Ok(Err(e)) => return Err(e),
+                    Err(_elapsed) => {
+                        return Err(AnvilError::new(crate::error::AnvilErrorKind::Io(
+                            std::io::Error::from(std::io::ErrorKind::TimedOut),
+                        )));
+                    }
+                },
+                None => connect_fut.await?,
+            };
+            Ok((
+                handle,
+                ConnectArtifacts {
+                    auth_banner: pieces.auth_banner,
+                    verified_fingerprint: pieces.verified_fingerprint,
+                },
+            ))
+        })
         .await?;
 
         log::debug!("session: SSH handshake complete with {}", config.host);
@@ -367,7 +409,21 @@ impl AnvilSession {
             handle,
             auth_banner: pieces.auth_banner,
             verified_fingerprint: pieces.verified_fingerprint,
+            retry_history,
         })
+    }
+
+    /// Returns the [`crate::retry::RetryAttempt`] history captured
+    /// during the most-recent `connect*` call on this session.
+    ///
+    /// Empty when the first attempt succeeded.  Non-empty when the
+    /// retry loop fired at least once; the last entry's `attempt`
+    /// matches the attempt number that ultimately succeeded.
+    /// Surfaced by `gitway --test --json`'s `data.retry_attempts`
+    /// envelope (FR-83).
+    #[must_use]
+    pub fn retry_history(&self) -> &[crate::retry::RetryAttempt] {
+        &self.retry_history
     }
 
     /// Establishes the SSH session through a chain of `ProxyJump`
@@ -508,6 +564,11 @@ impl AnvilSession {
                 handle,
                 auth_banner: pieces.auth_banner,
                 verified_fingerprint: pieces.verified_fingerprint,
+                // Per-hop retry not yet wired through M18.2 — see
+                // M18.2 commit body.  Empty history; consumers
+                // reading retry_history() see only the primary
+                // connect's attempts.
+                retry_history: Vec::new(),
             };
             hop_session
                 .authenticate_best(&hop_config)
@@ -563,6 +624,12 @@ impl AnvilSession {
             handle: final_handle,
             auth_banner: target_pieces.auth_banner,
             verified_fingerprint: target_pieces.verified_fingerprint,
+            // M18.2: ProxyJump chain doesn't yet have retry wired
+            // for the per-hop connects (each hop's
+            // direct-tcpip channel makes the retry semantics
+            // murkier).  Documented as scoped-out in the M18.2
+            // commit body; deferred to a follow-up.
+            retry_history: Vec::new(),
         })
     }
 
@@ -629,6 +696,11 @@ impl AnvilSession {
             handle,
             auth_banner: pieces.auth_banner,
             verified_fingerprint: pieces.verified_fingerprint,
+            // M18.2: ProxyCommand connect path doesn't yet have
+            // retry wired (the subprocess lifecycle complicates
+            // re-spawning per attempt).  Documented as scoped-out
+            // in the M18.2 commit body; deferred to a follow-up.
+            retry_history: Vec::new(),
         })
     }
 
@@ -1021,6 +1093,34 @@ impl AnvilSession {
 /// constant for) are silently dropped here because russh's `Name`
 /// types only accept `&'static str`; a future v1.1 may surface
 /// these via a hard error at the override-validation stage.
+/// Per-attempt artifacts captured during a successful connect inside
+/// [`AnvilSession::connect`]'s retry loop.  Keeps the closure
+/// signature concise and avoids leaking `HandlerPieces`'s internals
+/// (e.g. the consumed-on-connect `russh_cfg` Arc) past the loop
+/// boundary.
+struct ConnectArtifacts {
+    auth_banner: Arc<Mutex<Option<String>>>,
+    verified_fingerprint: Arc<Mutex<Option<String>>>,
+}
+
+/// Builds a [`crate::retry::RetryPolicy`] from the connect-related
+/// fields on [`AnvilConfig`] (M18, FR-80 / FR-81).  Each `None`
+/// field falls through to the corresponding `RetryPolicy::default()`
+/// value.
+fn retry_policy_from_config(config: &AnvilConfig) -> crate::retry::RetryPolicy {
+    let mut policy = crate::retry::RetryPolicy::default();
+    if let Some(t) = config.connect_timeout {
+        policy.connect_timeout = Some(t);
+    }
+    if let Some(n) = config.connection_attempts {
+        policy.attempts = n.max(1);
+    }
+    if let Some(w) = config.max_retry_window {
+        policy.max_window = w;
+    }
+    policy
+}
+
 fn build_russh_config(config: &AnvilConfig) -> client::Config {
     let kex_strings = config
         .kex_algorithms

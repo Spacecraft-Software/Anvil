@@ -108,6 +108,19 @@ pub struct AnvilConfig {
     /// Host-key algorithm preference (PRD §5.8.6 FR-76).  `None` →
     /// curated default.
     pub host_key_algorithms: Option<Vec<String>>,
+    /// Per-attempt TCP connect timeout (PRD §5.8.7 FR-80).  `None`
+    /// disables the timeout (matches OpenSSH's "no `ConnectTimeout`"
+    /// semantics).
+    pub connect_timeout: Option<Duration>,
+    /// Total number of connection attempts including the initial one
+    /// (PRD §5.8.7 FR-80).  `None` selects the curated default
+    /// ([`crate::retry::RetryPolicy`]'s `attempts = 3`).
+    pub connection_attempts: Option<u32>,
+    /// Hard ceiling on total elapsed wall-clock time across all
+    /// retry attempts (PRD §5.8.7 FR-81).  `None` selects the
+    /// curated default (30 s).  CLI-only — not part of OpenSSH's
+    /// `ssh_config(5)` grammar.
+    pub max_retry_window: Option<Duration>,
 }
 
 impl AnvilConfig {
@@ -191,6 +204,9 @@ pub struct AnvilConfigBuilder {
     ciphers: Option<Vec<String>>,
     macs: Option<Vec<String>>,
     host_key_algorithms: Option<Vec<String>>,
+    connect_timeout: Option<Duration>,
+    connection_attempts: Option<u32>,
+    max_retry_window: Option<Duration>,
 }
 
 impl AnvilConfigBuilder {
@@ -219,6 +235,15 @@ impl AnvilConfigBuilder {
             ciphers: None,
             macs: None,
             host_key_algorithms: None,
+            // Retry / timeout knobs default to None.  At session
+            // build time, None falls through to
+            // `crate::retry::RetryPolicy::default()` (3 attempts,
+            // 250 ms base, 30 s max_window, no connect timeout) —
+            // matches OpenSSH's defaults except for the new
+            // max_window cap which is Gitway-specific.
+            connect_timeout: None,
+            connection_attempts: None,
+            max_retry_window: None,
         }
     }
 
@@ -351,6 +376,30 @@ impl AnvilConfigBuilder {
         self
     }
 
+    /// Override the per-attempt TCP connect timeout (PRD §5.8.7
+    /// FR-80).  `None` disables the timeout.  CLI overrides this
+    /// AFTER `apply_ssh_config` so flags beat config (matches
+    /// OpenSSH precedence).
+    pub fn connect_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.connect_timeout = timeout;
+        self
+    }
+
+    /// Override the total connection-attempt count (PRD §5.8.7
+    /// FR-80).  `None` selects the curated default (3).
+    pub fn connection_attempts(mut self, attempts: Option<u32>) -> Self {
+        self.connection_attempts = attempts;
+        self
+    }
+
+    /// Override the wall-clock cap on total retry time (PRD
+    /// §5.8.7 FR-81).  `None` selects the curated default (30 s).
+    /// Not part of OpenSSH's `ssh_config(5)` grammar — CLI-only.
+    pub fn max_retry_window(mut self, window: Option<Duration>) -> Self {
+        self.max_retry_window = window;
+        self
+    }
+
     /// Layer values from a [`ResolvedSshConfig`] into this builder.
     ///
     /// Provides ssh_config-derived defaults that subsequent builder calls
@@ -432,7 +481,23 @@ impl AnvilConfigBuilder {
             crate::algorithms::anvil_default_host_keys,
             |b, v| b.host_key_algorithms = Some(v),
         );
-        warn_unhonored_directives(resolved);
+
+        // M18 / FR-80: ConnectTimeout + ConnectionAttempts from
+        // ssh_config flow through to the retry-policy fields.  CLI
+        // overrides applied AFTER apply_ssh_config win over these
+        // (matches OpenSSH precedence).  Don't clobber a value
+        // already set on the builder — that's how the CLI-wins
+        // precedence is achieved.
+        if self.connect_timeout.is_none() {
+            if let Some(d) = resolved.connect_timeout {
+                self.connect_timeout = Some(d);
+            }
+        }
+        if self.connection_attempts.is_none() {
+            if let Some(n) = resolved.connection_attempts {
+                self.connection_attempts = Some(n);
+            }
+        }
         self
     }
 
@@ -484,40 +549,20 @@ impl AnvilConfigBuilder {
             ciphers: self.ciphers,
             macs: self.macs,
             host_key_algorithms: self.host_key_algorithms,
+            connect_timeout: self.connect_timeout,
+            connection_attempts: self.connection_attempts,
+            max_retry_window: self.max_retry_window,
         }
     }
 }
 
-/// Emits a single `log::warn!` listing any directives in `resolved` that
-/// the resolver successfully parsed but Anvil does not yet honor.  Called
-/// from [`AnvilConfigBuilder::apply_ssh_config`] so the warning fires
-/// when a config is actually being prepared for connection — `gitway
-/// config show` and similar inspection callers do not trigger it.
-///
-/// The remaining unhonored set after M17:
-/// - `ConnectTimeout`, `ConnectionAttempts` — parsed but not yet wired
-///   into `connect()`.  M18 honors them.
-///
-/// `HostKeyAlgorithms` / `KexAlgorithms` / `Ciphers` / `MACs` were
-/// the M17 deferral; they're now consumed by `apply_ssh_config` via
-/// the `apply_alg_directive` helper above.
-fn warn_unhonored_directives(resolved: &ResolvedSshConfig) {
-    let mut m18: Vec<&'static str> = Vec::new();
-    if resolved.connect_timeout.is_some() {
-        m18.push("ConnectTimeout");
-    }
-    if resolved.connection_attempts.is_some() {
-        m18.push("ConnectionAttempts");
-    }
-
-    if !m18.is_empty() {
-        log::warn!(
-            "ssh_config: directive(s) {} parsed but not yet honored \
-             (landing in M18 — Gitway PRD §8)",
-            m18.join(", "),
-        );
-    }
-}
+// Note: the `warn_unhonored_directives` helper that lived here from
+// M12.6 → M17.2 → M18.2 was removed in M18.2.  Every `ssh_config(5)`
+// directive Anvil's resolver parses today is now consumed by
+// `apply_ssh_config` (HostKeyAlgorithms / KexAlgorithms / Ciphers /
+// MACs landed in M17; ConnectTimeout / ConnectionAttempts in M18).
+// Future deferral warnings should reintroduce a similar helper if a
+// new milestone parses-but-doesn't-yet-consume a directive.
 
 #[cfg(test)]
 mod tests {
