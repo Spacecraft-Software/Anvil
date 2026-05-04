@@ -61,6 +61,10 @@ serde_yml = "0.0.12"
 name    = "throughput"
 harness = false
 
+[[bench]]
+name    = "ssh_config_latency"
+harness = false
+
 # ── Lints ─────────────────────────────────────────────────────────────────────
 
 [lints.rust]

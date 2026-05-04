@@ -1,0 +1,18 @@
+description: "Global directives apply, Host block extends them with first-wins precedence"
+
+# Global User comes first → wins because it appears earlier in source order.
+# Host block contributes IdentityFile (no conflict with Global → applied).
+config: |
+  User globaluser
+  Host gh
+    HostName github.com
+    User specificuser
+    IdentityFile /tmp/specific_id
+
+host: gh
+
+expected:
+  hostname: github.com
+  user: globaluser
+  identity_files:
+    - /tmp/specific_id
