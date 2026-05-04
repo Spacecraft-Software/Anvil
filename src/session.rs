@@ -178,20 +178,28 @@ impl fmt::Debug for AnvilSession {
     }
 }
 
+/// The pre-handshake state every constructor on [`AnvilSession`]
+/// builds before driving russh.  Factoring it out keeps `connect`,
+/// `connect_via_proxy_command`, and `connect_via_jump_hosts` (M13.4)
+/// in lock-step on host-key handling and the `auth_banner` /
+/// `verified_fingerprint` mutexes the public getters expose.
+struct HandlerPieces {
+    russh_cfg: Arc<client::Config>,
+    handler: GitwayHandler,
+    auth_banner: Arc<Mutex<Option<String>>>,
+    verified_fingerprint: Arc<Mutex<Option<String>>>,
+}
+
 impl AnvilSession {
     // ── Construction ─────────────────────────────────────────────────────────
 
-    /// Establishes a TCP connection to the host in `config` and completes the
-    /// SSH handshake (including host-key verification).
+    /// Builds the russh config + handler used by every constructor.
     ///
-    /// Does **not** authenticate; call [`authenticate`](Self::authenticate) or
-    /// [`authenticate_best`](Self::authenticate_best) after this.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on network failure or if the server's host key does not
-    /// match any pinned fingerprint.
-    pub async fn connect(config: &AnvilConfig) -> Result<Self, AnvilError> {
+    /// Centralises host-key fingerprint lookup (with the
+    /// [`StrictHostKeyChecking::AcceptNew`] tolerance for unknown hosts
+    /// when a writable `custom_known_hosts` path is set) and the shared
+    /// `auth_banner` / `verified_fingerprint` mutex pair.
+    fn build_handler_pieces(config: &AnvilConfig) -> Result<HandlerPieces, AnvilError> {
         let russh_cfg = Arc::new(build_russh_config(config.inactivity_timeout));
         // For StrictHostKeyChecking=AcceptNew with a writable known_hosts
         // path, an empty fingerprint set is acceptable — the handler will
@@ -229,17 +237,108 @@ impl AnvilSession {
             verified_fingerprint: Arc::clone(&verified_fingerprint),
         };
 
+        Ok(HandlerPieces {
+            russh_cfg,
+            handler,
+            auth_banner,
+            verified_fingerprint,
+        })
+    }
+
+    /// Establishes a TCP connection to the host in `config` and completes the
+    /// SSH handshake (including host-key verification).
+    ///
+    /// Does **not** authenticate; call [`authenticate`](Self::authenticate) or
+    /// [`authenticate_best`](Self::authenticate_best) after this.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on network failure or if the server's host key does not
+    /// match any pinned fingerprint.
+    pub async fn connect(config: &AnvilConfig) -> Result<Self, AnvilError> {
+        let pieces = Self::build_handler_pieces(config)?;
+
         log::debug!("session: connecting to {}:{}", config.host, config.port);
 
-        let handle =
-            client::connect(russh_cfg, (config.host.as_str(), config.port), handler).await?;
+        let handle = client::connect(
+            pieces.russh_cfg,
+            (config.host.as_str(), config.port),
+            pieces.handler,
+        )
+        .await?;
 
         log::debug!("session: SSH handshake complete with {}", config.host);
 
         Ok(Self {
             handle,
-            auth_banner,
-            verified_fingerprint,
+            auth_banner: pieces.auth_banner,
+            verified_fingerprint: pieces.verified_fingerprint,
+        })
+    }
+
+    /// Establishes the SSH session over a child process spawned from a
+    /// `ProxyCommand` template (FR-55).
+    ///
+    /// `proxy_command_template` is the raw template (typically from
+    /// [`crate::ssh_config::ResolvedSshConfig::proxy_command`] or a CLI
+    /// override).  `%h`, `%p`, `%r`, `%n`, and `%%` are expanded against
+    /// `config.host`, `config.port`, `config.username`, and `alias`
+    /// respectively before the platform shell (`sh -c` / `cmd /C`)
+    /// spawns the command.  The child's stdin/stdout become the SSH
+    /// transport via [`russh::client::connect_stream`].
+    ///
+    /// `alias` is the original argument the user typed before
+    /// `HostName` resolution — it powers the `%n` token.  Pass
+    /// `config.host` if you do not track the alias separately.
+    ///
+    /// The literal value `"none"` (case-insensitive) is recognized as
+    /// the FR-59 disable sentinel: this method returns an error
+    /// directing the caller to use [`Self::connect`] instead.  In
+    /// practice the caller's dispatcher should never invoke this
+    /// method in that case, but the guard keeps the spawn path safe
+    /// against accidental "none" input.
+    ///
+    /// # Errors
+    /// Returns an error on shell-spawn failure, on a host-key
+    /// mismatch, or on any russh handshake failure.
+    pub async fn connect_via_proxy_command(
+        config: &AnvilConfig,
+        proxy_command_template: &str,
+        alias: &str,
+    ) -> Result<Self, AnvilError> {
+        if proxy_command_template.eq_ignore_ascii_case("none") {
+            return Err(AnvilError::invalid_config(
+                "ProxyCommand=none is the disable sentinel; \
+                 call AnvilSession::connect instead",
+            ));
+        }
+
+        let pieces = Self::build_handler_pieces(config)?;
+
+        log::debug!(
+            "session: connecting to {} via ProxyCommand template `{proxy_command_template}`",
+            config.host,
+        );
+
+        let stream = crate::proxy::command::spawn_proxy_command(
+            proxy_command_template,
+            &config.host,
+            config.port,
+            &config.username,
+            alias,
+        )?;
+
+        let handle = client::connect_stream(pieces.russh_cfg, stream, pieces.handler).await?;
+
+        log::debug!(
+            "session: SSH handshake complete with {} (via ProxyCommand)",
+            config.host,
+        );
+
+        Ok(Self {
+            handle,
+            auth_banner: pieces.auth_banner,
+            verified_fingerprint: pieces.verified_fingerprint,
         })
     }
 
