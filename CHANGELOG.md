@@ -2,6 +2,86 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.0.0] — TBD
+
+The first stable release of `anvil-ssh`.  This release declares the
+public API **stable under SemVer**: every `pub` symbol that's
+exposed today is supported through the 1.x line.
+
+### Public API stability commitment
+
+From 1.0 onward:
+
+- **Patch bumps** (`1.0.x`) are bug fixes only — no API additions.
+- **Minor bumps** (`1.x.0`) may add new public symbols; existing
+  ones never change shape or behavior.
+- **Major bumps** (`x.0.0`) are reserved for breaking changes and
+  are coordinated with downstream consumers — primarily
+  [Steelbore/Gitway](https://github.com/Steelbore/Gitway).
+
+### Deprecation timeline (revised at 1.0)
+
+The legacy `GitwaySession` / `GitwayConfig` / `GitwayError` aliases
+that were marked `#[deprecated]` in 0.2.0 **remain in 1.x**.  This
+is a deliberate softening of the original `AGENTS.md` roadmap (which
+proposed removing them at 1.0): the corresponding
+[`gitway-lib` shim](https://github.com/Steelbore/Gitway/blob/main/gitway-lib/src/lib.rs)
+re-exports `anvil_ssh::*` through the legacy `gitway_lib::*` path
+and is preserved through Gitway's 1.x line per the
+[Gitway migration doc](https://github.com/Steelbore/Gitway/blob/main/docs/migration-from-v0.9.md);
+removing the upstream aliases now would silently break that shim.
+Removal is now scheduled for 2.0.0.
+
+### Changed
+
+- **Version bump** 0.9.0 → 1.0.0.  No API changes from 0.9.0; this
+  release is a stabilization signal.
+
+### Added
+
+Nothing new in 1.0.0 itself.  Cumulative additions since 0.1.0 are
+documented in the per-version sections below; the M11.5 → M19
+work landed in 0.1 through 0.9.
+
+### Removed
+
+Nothing.  The deprecated `Gitway*` aliases stay through the 1.x
+line (see Deprecation timeline).
+
+### Out of scope (deferred to 1.x or 2.0)
+
+Tracked as work to land in subsequent releases:
+
+- **FR-61, FR-62, FR-63 — live `@cert-authority` validation
+  during KEX.**  Blocked on russh upstream cert-host-key
+  support.  Will land in a 1.x minor when russh exposes server
+  certificates to `check_server_key`.
+- **FIDO2 / `sk-ssh-*` hardware-backed keys** (Gitway PRD §5.8.5,
+  M16).  Vendor fragmentation across YubiKey, SoloKeys, OnlyKey
+  needs a hardware-test matrix; deferred to a 1.x minor.
+- **Full `Match` block semantics in `ssh_config`** (Gitway PRD
+  §12 Q1).  Parser support landed in M12; eval semantics deferred
+  to a 1.x minor.
+
+### Known residual risks
+
+- **RUSTSEC-2023-0071 (Marvin Attack on the `rsa` crate).**  No
+  patch available upstream
+  ([RustCrypto/RSA #626](https://github.com/RustCrypto/RSA/issues/626)).
+  Documented + accepted with rationale in
+  [Gitway's `docs/security.md`](https://github.com/Steelbore/Gitway/blob/main/docs/security.md):
+  the `rsa` crate is only on the local keygen + SSHSIG paths;
+  transport crypto is `aws-lc-rs` (constant-time); SSH auth uses
+  Ed25519 by default.  We will bump as soon as upstream ships a
+  patched release.
+
+### Verification
+
+- `cargo build --release` clean
+- `cargo test` — 207+ unit + integration tests pass
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo fmt --check` clean
+
 ## [0.9.0] — 2026-05-04
 
 ### Added

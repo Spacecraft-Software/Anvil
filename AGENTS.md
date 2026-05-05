@@ -50,10 +50,19 @@ Pure-Rust SSH stack for Git tooling: transport, keys, signing, agent.  Foundatio
 
 ## Type rename roadmap
 
-- `v0.1.x` — types carried over from the source crate as `GitwaySession` / `GitwayConfig` / `GitwayError` to keep the lift-and-shift extraction zero-rename. Downstream churn limited to crate-name change.
-- `v0.2.0` (current) — types renamed to `AnvilSession` / `AnvilConfig` / `AnvilError`. Legacy `Gitway*` names retained as `#[deprecated]` re-exports for one major version.
-- `v1.0.0` — stabilization; cut concurrently with Gitway 1.0.0. Deprecated `Gitway*` aliases removed.
+- `v0.1.x` — types carried over from the source crate as `GitwaySession` / `GitwayConfig` / `GitwayError` to keep the lift-and-shift extraction zero-rename.
+- `v0.2.0` — types renamed to `AnvilSession` / `AnvilConfig` / `AnvilError`. Legacy `Gitway*` names retained as `#[deprecated]` re-exports.
+- `v1.0.0` (current) — stabilization, cut concurrently with Gitway 1.0.0.  Deprecated `Gitway*` aliases **kept** through the 1.x line.  This is a deliberate softening of the original roadmap (which had proposed removing them at 1.0): the corresponding `gitway-lib` shim re-exports `anvil_ssh::*` glob-style and is preserved through Gitway 1.x per Gitway's `docs/migration-from-v0.9.md`.  Removing the upstream aliases at 1.0 would silently break that shim.
+- `v2.0.0` (planned) — deprecated `Gitway*` aliases removed.
 
 ## Versioning
 
-SemVer.  Pre-1.0 minor bumps may break public API; patch bumps are bug fixes only.  See `CHANGELOG.md` for the cumulative record.
+SemVer.  As of v1.0.0, the public API is **frozen under SemVer**:
+
+- **Patch bumps** (`1.0.x`) are bug fixes only — no API additions.
+- **Minor bumps** (`1.x.0`) may add new public symbols; existing
+  ones never change shape or behavior.
+- **Major bumps** (`x.0.0`) are reserved for breaking changes and
+  are coordinated with downstream consumers (primarily Gitway).
+
+See `CHANGELOG.md` for the cumulative record.
