@@ -146,6 +146,28 @@ impl AllowedSigners {
         out
     }
 
+    /// Returns every principal whose entry's public key equals `public_key`,
+    /// regardless of any per-entry `namespaces="..."` restriction.
+    ///
+    /// Mirrors upstream `ssh-keygen -Y find-principals`, whose synopsis takes
+    /// only `-s signature_file -f allowed_signers_file` — namespace filtering
+    /// is not part of the find-principals operation. The namespace-aware
+    /// variant [`find_principals`] remains available for callers that want
+    /// the stricter semantics.
+    #[must_use]
+    pub fn find_principals_any_ns<'a>(&'a self, public_key: &PublicKey) -> Vec<&'a str> {
+        let mut out = Vec::new();
+        for entry in &self.entries {
+            if entry.public_key != *public_key {
+                continue;
+            }
+            for p in &entry.principals {
+                out.push(p.as_str());
+            }
+        }
+        out
+    }
+
     /// Returns `true` if any entry authorizes `identity` to sign under
     /// `namespace` with `public_key`.
     ///
