@@ -220,6 +220,32 @@ pub fn find_principals(
         .collect())
 }
 
+/// Returns every principal in `allowed` whose entry's public key matches
+/// the one embedded in `armored_sig`, ignoring per-entry namespace
+/// restrictions.
+///
+/// Mirrors upstream `ssh-keygen -Y find-principals -s <sig> -f <allowed>`,
+/// which git invokes without `-n` during commit verification. Use
+/// [`find_principals`] when the caller has a namespace and wants to honor
+/// per-entry `namespaces="..."` restrictions.
+///
+/// # Errors
+///
+/// Returns [`AnvilError::signature_invalid`] if `armored_sig` is malformed.
+pub fn find_principals_any_ns(
+    armored_sig: &str,
+    allowed: &AllowedSigners,
+) -> Result<Vec<String>, AnvilError> {
+    let sig = SshSig::from_pem(armored_sig)
+        .map_err(|e| AnvilError::signature_invalid(format!("malformed signature: {e}")))?;
+    let public_key = PublicKey::from(sig.public_key().clone());
+    Ok(allowed
+        .find_principals_any_ns(&public_key)
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -324,5 +350,31 @@ mod tests {
         let principals = find_principals(&armored, &allowed, "git").unwrap();
         assert!(principals.iter().any(|p| p == "carol@example.com"));
         assert!(principals.iter().any(|p| p == "dave@example.com"));
+    }
+
+    #[test]
+    fn find_principals_any_ns_ignores_namespace_restriction() {
+        // Entry restricts itself to namespaces="signing", but the signature
+        // is over namespace "git". Namespace-aware lookup must skip the
+        // entry; the any-ns lookup must still return its principals.
+        let key = generate(KeyType::Ed25519, None, "erin@test").unwrap();
+        let pubkey_line = key.public_key().to_openssh().unwrap();
+        let allowed_text =
+            format!("erin@example.com namespaces=\"signing\" {pubkey_line}");
+        let allowed = AllowedSigners::parse(&allowed_text).unwrap();
+
+        let armored = sign(&mut Cursor::new(b"x"), &key, "git", HashAlg::Sha512).unwrap();
+
+        let strict = find_principals(&armored, &allowed, "git").unwrap();
+        assert!(
+            strict.is_empty(),
+            "namespace-aware lookup must skip entries restricted to a different namespace, got {strict:?}"
+        );
+
+        let any = find_principals_any_ns(&armored, &allowed).unwrap();
+        assert!(
+            any.iter().any(|p| p == "erin@example.com"),
+            "any-ns lookup must return the principal regardless of namespace restriction, got {any:?}"
+        );
     }
 }
