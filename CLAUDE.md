@@ -1,44 +1,76 @@
 # CLAUDE.md — Anvil
 
-Anvil is a pure-Rust SSH stack for Git tooling: transport, keys, signing, agent.  Extracted from [Steelbore/Gitway](https://github.com/steelbore/gitway) at commit `28abee6`.  Primary consumer is the Gitway CLI binaries (`gitway`, `gitway-keygen`, `gitway-add`).
+Anvil is a pure-Rust SSH stack for Git tooling: transport, keys, signing, agent.  Extracted from [Spacecraft-Software/Gitway](https://github.com/Spacecraft-Software/gitway) at commit `28abee6`.  Primary consumer is the Gitway CLI binaries (`gitway`, `gitway-keygen`, `gitway-add`).
+
+See [AGENTS.md](AGENTS.md) for coding conventions, forbidden patterns, dependency policy, and the procedure for adding a new Git hosting provider — this file covers the architecture and build/test workflow only.
 
 ## Layout
 
 ```
 src/
-  session.rs           russh-backed transport
-  auth.rs              key discovery + agent-auth
+  session.rs           russh-backed transport (retry-wrapped connect)
+  auth.rs              key discovery (CLI → ~/.ssh → agent) + agent-auth
   hostkey.rs           pinned fingerprints (GitHub / GitLab / Codeberg)
+  cert_authority.rs    @cert-authority / @revoked parser + HashedHost
   relay.rs             bidirectional stdin/stdout/stderr relay
-  config.rs            transport config builder
+  config.rs            AnvilConfig builder; per-provider constructors
   error.rs             unified error + SFRS exit codes
-  keygen.rs            Ed25519/ECDSA/RSA keygen
+  algorithms.rs        KEX/cipher/MAC catalogue + OpenSSH +/-/^/replace + denylist
+  retry.rs             RetryPolicy + transient/fatal classifier + jittered backoff
+  keygen.rs            Ed25519/ECDSA/RSA keygen in OpenSSH format
   sshsig.rs            SSHSIG sign/verify/check-novalidate/find-principals
   allowed_signers.rs   git allowed_signers parser
-  diagnostic.rs        single-line stderr diagnostic helper
-  time.rs              ISO 8601 timestamp helpers
+  log.rs               tracing-category constants + install_log_bridge()
+  diagnostic.rs        single-line stderr failure diagnostic helper
+  time.rs              ISO 8601 timestamp helpers (no chrono/time dep)
   agent/
     askpass.rs         $SSH_ASKPASS-driven interactive confirm
     client.rs          blocking SSH-agent client
     daemon.rs          async SSH-agent server (Session trait impl)
+  proxy/
+    command.rs         ProxyCommand spawn + stdio plumbing
+    jump.rs            ProxyJump chains (up to 8 hops, per-hop host-key verify)
+    stdio.rs           stdio<->channel adapter
+    tokens.rs          %h %p %r %n %% token expansion
+  ssh_config/
+    lexer.rs           ssh_config(5) tokenizer
+    parser.rs          directive parser
+    matcher.rs         Host / Match block resolution
+    resolver.rs        merged effective config per host
+    include.rs         Include directive expansion
 tests/
-  test_connection.rs   gated real-network tests
-  test_clone.rs        end-to-end git clone
+  test_connection.rs       gated real-network tests
+  test_clone.rs            end-to-end git clone (network-gated)
+  test_proxy_jump.rs       ProxyJump chain integration
+  test_hashed_hosts.rs     OpenSSH HashKnownHosts (HMAC-SHA1) fixtures
+  test_hostkey_writes.rs   known_hosts write paths
+  test_known_hosts_cert.rs @cert-authority / @revoked semantics
+  ssh_config_acceptance.rs YAML-driven ssh_config parser matrix
+  ssh_config_matrix/       acceptance fixtures
 benches/
-  throughput.rs        criterion throughput benchmark
+  throughput.rs            criterion transport throughput
+  ssh_config_latency.rs    ssh_config parse/resolve latency
+  proxy_chain.rs           ProxyJump chain setup overhead
 ```
 
 ## Build and test
 
+**MSRV:** Rust 1.88.
+
 ```sh
 cargo build --release
 cargo test
+cargo test --test test_clone                            # single integration test file
+cargo test sshsig::tests::verify_roundtrip              # single unit test by path
+GITWAY_INTEGRATION_TESTS=1 cargo test -- --ignored      # gated network tests
+cargo bench                                             # criterion benches
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
-GITWAY_INTEGRATION_TESTS=1 cargo test -- --ignored   # network tests
 ```
 
 `perl` is required by `aws-lc-rs` (assembly pre-processing) on every platform; `nasm` is also required on Windows MSVC.  On Linux, `musl-tools` is needed for the static target used in CI release builds.
+
+`nix` is a Unix-only dependency (`cfg(unix)` in Cargo.toml) used by the agent daemon for `setsid(2)`, signal handling, and socket-permission tightening.  When cross-checking against Windows (`cargo check --target x86_64-pc-windows-msvc`), expect the agent daemon's Unix paths to compile out, not fail.
 
 ## Key invariants
 
@@ -77,17 +109,15 @@ Provider fingerprint pages:
 
 ## Crypto backend
 
-`russh` is configured with the `aws-lc-rs` backend (non-FIPS, no CMake needed).  Do not switch to `ring` — `aws-lc-rs` provides post-quantum algorithm support that `ring` lacks.  On Windows, `nasm` is required for the build (handled in CI).
+`russh` is configured with `default-features = false` and the feature set `["aws-lc-rs", "flate2", "rsa"]` (see Cargo.toml).  Do not switch the russh backend to `ring` — `aws-lc-rs` provides post-quantum algorithm support that `ring` lacks, and avoids CMake on non-FIPS builds.  On Windows, `nasm` is required for the build (handled in CI).
 
 The `ssh-key` RustCrypto stack (`ed25519-dalek` 2.x, `rsa` 0.9, `p256`/`p384`/`p521`) is used only for keygen and SSHSIG blob formatting.  `PrivateKey` values never cross the boundary between the two stacks.
 
 ## Type rename roadmap
 
-- `v0.1.x` — types carried over from the source crate as `GitwaySession` / `GitwayConfig` / `GitwayError` (lift-and-shift extraction; only the crate name changed).
-- `v0.2.0` (current) — types renamed to `AnvilSession` / `AnvilConfig` / `AnvilError`. Legacy `Gitway*` names retained as `#[deprecated]` re-exports at the crate root.
-- `v1.0.0` — stabilization (concurrent with Gitway 1.0.0). Deprecated `Gitway*` aliases removed.
+Current: **v1.0.x** (`Cargo.toml`).  The `Gitway*` aliases are *deliberately* retained through the entire 1.x line — see [AGENTS.md](AGENTS.md) §"Type rename roadmap" for the canonical timeline and the reason the original 1.0-removal plan was softened (`gitway-lib` shim compatibility).  Removal is planned for **v2.0.0**.
 
 ## Related
 
-- [Steelbore/Gitway](https://github.com/steelbore/gitway) — primary consumer.
-- [Gitway PRD v1.0](https://github.com/steelbore/gitway/blob/main/Gitway-PRD-v1.0.md) — full v1.0 scope and roadmap.
+- [Spacecraft-Software/Gitway](https://github.com/Spacecraft-Software/gitway) — primary consumer.
+- [Gitway PRD v1.0](https://github.com/Spacecraft-Software/gitway/blob/main/Gitway-PRD-v1.0.md) — full v1.0 scope and roadmap.
