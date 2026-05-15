@@ -4,11 +4,11 @@ Guidelines for AI agents working in the Anvil codebase.
 
 ## What Anvil is
 
-Pure-Rust SSH stack for Git tooling: transport, keys, signing, agent.  Foundation library extracted from [Steelbore/Gitway](https://github.com/steelbore/gitway); primary consumer is the Gitway CLI binaries (`gitway`, `gitway-keygen`, `gitway-add`).
+Pure-Rust SSH stack for Git tooling: transport, keys, signing, agent.  Foundation library extracted from [Spacecraft-Software/Gitway](https://github.com/Spacecraft-Software/gitway); primary consumer is the Gitway CLI binaries (`gitway`, `gitway-keygen`, `gitway-add`).
 
 ## Rust coding conventions
 
-- Follow the **Steelbore Rust Guidelines** (invoke `/rust-guidelines` skill before any Rust edit).
+- Follow the **Spacecraft Software Rust Guidelines** (invoke `/rust-guidelines` skill before any Rust edit).
 - All new Rust files must begin with `// SPDX-License-Identifier: GPL-3.0-or-later`.
 - All public types must implement `Debug` (derive or custom).
 - Use `#[expect(..., reason = "...")]` instead of `#[allow(...)]` for lint suppression.

@@ -2,13 +2,13 @@
 
 **Pure-Rust SSH stack for Git tooling — transport, keys, signing, agent.**
 
-Anvil is the foundation library extracted from [Steelbore/Gitway](https://github.com/steelbore/gitway). It packages everything Git needs from SSH, and nothing it doesn't: pinned-host transport, key generation, SSHSIG commit signing, and an SSH agent (client + daemon). Pure Rust end to end. No C runtime at link time. `#![forbid(unsafe_code)]` in project-owned code.
+Anvil is the foundation library extracted from [Spacecraft-Software/Gitway](https://github.com/Spacecraft-Software/gitway). It packages everything Git needs from SSH, and nothing it doesn't: pinned-host transport, key generation, SSHSIG commit signing, and an SSH agent (client + daemon). Pure Rust end to end. No C runtime at link time. `#![forbid(unsafe_code)]` in project-owned code.
 
 ## Status
 
 **`v1.0.0`** — first stable release.  Public API frozen under SemVer
 through the 1.x line.  Full release notes in [CHANGELOG.md](CHANGELOG.md);
-roadmap context in the [Gitway PRD](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md).
+roadmap context in the [Gitway PRD](https://github.com/Spacecraft-Software/Gitway/blob/main/Gitway-PRD-v1.0.md).
 
 **MSRV:** Rust 1.88.
 
@@ -27,7 +27,7 @@ async fn main() -> Result<(), anvil_ssh::AnvilError> {
     let config = AnvilConfig::github();
     let mut session = AnvilSession::connect(&config).await?;
     session.authenticate_best(&config).await?;
-    let exit_code = session.exec("git-upload-pack 'steelbore/gitway.git'").await?;
+    let exit_code = session.exec("git-upload-pack 'Spacecraft-Software/gitway.git'").await?;
     session.close().await?;
     Ok(())
 }
@@ -64,7 +64,7 @@ in your `use anvil_ssh::*;` imports.
 - **Not a TLS or HTTP toolkit.**  SSH only.
 - **Not a runtime.**  Anvil exposes async APIs but doesn't install
   a tracing subscriber or pick an executor for you.  Consumers
-  (typically [Gitway](https://github.com/Steelbore/Gitway)) own the
+  (typically [Gitway](https://github.com/Spacecraft-Software/Gitway)) own the
   runtime/subscriber policy.
 - **Not a TOFU implementation.**  The known-host fingerprints for
   GitHub, GitLab, and Codeberg are pinned at build time.  Adding
@@ -118,11 +118,11 @@ cargo fmt --check
 
 ## Security
 
-See [Gitway's `docs/security.md`](https://github.com/Steelbore/Gitway/blob/main/docs/security.md) for the full threat model.  TL;DR: Anvil defends against active network attackers (pinned fingerprints, algorithm denylist, `@revoked` enforcement) and memory-safety classes (`#![forbid(unsafe_code)]` everywhere).  One known residual risk is documented:
+See [Gitway's `docs/security.md`](https://github.com/Spacecraft-Software/Gitway/blob/main/docs/security.md) for the full threat model.  TL;DR: Anvil defends against active network attackers (pinned fingerprints, algorithm denylist, `@revoked` enforcement) and memory-safety classes (`#![forbid(unsafe_code)]` everywhere).  One known residual risk is documented:
 
 - **RUSTSEC-2023-0071** — Marvin Attack on the `rsa` crate.  No upstream patch yet; we use `rsa` only for local keygen + SSHSIG signing (transport crypto is `aws-lc-rs`, constant-time).  The default key type is Ed25519, which is unaffected.
 
-Disclosure policy: [Gitway's `SECURITY.md`](https://github.com/Steelbore/Gitway/blob/main/SECURITY.md).
+Disclosure policy: [Gitway's `SECURITY.md`](https://github.com/Spacecraft-Software/Gitway/blob/main/SECURITY.md).
 
 ## License
 
@@ -130,4 +130,4 @@ GPL-3.0-or-later. Copyright © 2026 Mohamed Hammad. See [LICENSE](LICENSE).
 
 ## Related
 
-- [Steelbore/Gitway](https://github.com/steelbore/gitway) — primary consumer; the full Git-over-SSH toolkit (`gitway`, `gitway-keygen`, `gitway-add` binaries) built on top of Anvil.
+- [Spacecraft-Software/Gitway](https://github.com/Spacecraft-Software/gitway) — primary consumer; the full Git-over-SSH toolkit (`gitway`, `gitway-keygen`, `gitway-add` binaries) built on top of Anvil.

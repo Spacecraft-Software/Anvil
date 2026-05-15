@@ -17,7 +17,7 @@ From 1.0 onward:
   ones never change shape or behavior.
 - **Major bumps** (`x.0.0`) are reserved for breaking changes and
   are coordinated with downstream consumers — primarily
-  [Steelbore/Gitway](https://github.com/Steelbore/Gitway).
+  [Spacecraft-Software/Gitway](https://github.com/Spacecraft-Software/Gitway).
 
 ### Deprecation timeline (revised at 1.0)
 
@@ -25,10 +25,10 @@ The legacy `GitwaySession` / `GitwayConfig` / `GitwayError` aliases
 that were marked `#[deprecated]` in 0.2.0 **remain in 1.x**.  This
 is a deliberate softening of the original `AGENTS.md` roadmap (which
 proposed removing them at 1.0): the corresponding
-[`gitway-lib` shim](https://github.com/Steelbore/Gitway/blob/main/gitway-lib/src/lib.rs)
+[`gitway-lib` shim](https://github.com/Spacecraft-Software/Gitway/blob/main/gitway-lib/src/lib.rs)
 re-exports `anvil_ssh::*` through the legacy `gitway_lib::*` path
 and is preserved through Gitway's 1.x line per the
-[Gitway migration doc](https://github.com/Steelbore/Gitway/blob/main/docs/migration-from-v0.9.md);
+[Gitway migration doc](https://github.com/Spacecraft-Software/Gitway/blob/main/docs/migration-from-v0.9.md);
 removing the upstream aliases now would silently break that shim.
 Removal is now scheduled for 2.0.0.
 
@@ -69,7 +69,7 @@ Tracked as work to land in subsequent releases:
   patch available upstream
   ([RustCrypto/RSA #626](https://github.com/RustCrypto/RSA/issues/626)).
   Documented + accepted with rationale in
-  [Gitway's `docs/security.md`](https://github.com/Steelbore/Gitway/blob/main/docs/security.md):
+  [Gitway's `docs/security.md`](https://github.com/Spacecraft-Software/Gitway/blob/main/docs/security.md):
   the `rsa` crate is only on the local keygen + SSHSIG paths;
   transport crypto is `aws-lc-rs` (constant-time); SSH auth uses
   Ed25519 by default.  We will bump as soon as upstream ships a
@@ -86,7 +86,7 @@ Tracked as work to land in subsequent releases:
 
 ### Added
 
-- **Connection retry, backoff, and timeouts** — the M18 chapter of [Gitway PRD §5.8.7](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md), FR-80..FR-83.  Closes the M12.6 `ConnectTimeout` / `ConnectionAttempts` deferral loop.
+- **Connection retry, backoff, and timeouts** — the M18 chapter of [Gitway PRD §5.8.7](https://github.com/Spacecraft-Software/Gitway/blob/main/Gitway-PRD-v1.0.md), FR-80..FR-83.  Closes the M12.6 `ConnectTimeout` / `ConnectionAttempts` deferral loop.
   - **New `anvil_ssh::retry` module** — public surface: `RetryPolicy { attempts, base, factor, cap, max_window, connect_timeout }` with builder setters; `Disposition { Retry, Fatal }` + `classify(err)` (FR-82); `RetryAttempt { attempt, reason, elapsed }`; `async fn run<F, Fut, T>(policy, op) -> (T, Vec<RetryAttempt>)` (FR-81, FR-83) — drives a jittered exponential backoff loop with `OsRng` jitter, bails on `max_window` exhaustion, emits a `tracing::warn!` event at the new `CAT_RETRY` category per failed attempt.  `run` is timeout-agnostic — the per-attempt `tokio::time::timeout` wrap lives at the call site.  Default policy: 3 attempts, 250 ms base, ×2 factor, 8 s cap, 30 s max_window, no connect_timeout.
   - **New `anvil_ssh::log::CAT_RETRY = "anvil_ssh::retry"`** appended to `CATEGORIES` for downstream `--debug-categories` validators.
   - **`AnvilError::io_kind()`** returns `Option<std::io::ErrorKind>` for the `Io` variant — used by the FR-82 classifier and useful for downstream consumers inspecting failure categories.
@@ -117,7 +117,7 @@ Tracked as work to land in subsequent releases:
 
 ### Added
 
-- **Algorithm overrides** — the M17 chapter of [Gitway PRD §5.8.6](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md), FR-76..FR-79.  Closes the M12.6 algorithm-override loop: `KexAlgorithms` / `Ciphers` / `MACs` / `HostKeyAlgorithms` directives from `~/.ssh/config` (and the matching CLI overrides M17.4 will land in Gitway 1.0.0-rc.8) now flow through to russh's `Preferred` set instead of being parsed and discarded.
+- **Algorithm overrides** — the M17 chapter of [Gitway PRD §5.8.6](https://github.com/Spacecraft-Software/Gitway/blob/main/Gitway-PRD-v1.0.md), FR-76..FR-79.  Closes the M12.6 algorithm-override loop: `KexAlgorithms` / `Ciphers` / `MACs` / `HostKeyAlgorithms` directives from `~/.ssh/config` (and the matching CLI overrides M17.4 will land in Gitway 1.0.0-rc.8) now flow through to russh's `Preferred` set instead of being parsed and discarded.
   - **New `anvil_ssh::algorithms` module** — public surface: `pub const DENYLIST: &[&str]` (DSA, 3DES, Arcfour variants, hmac-sha1-96, ssh-1.0); `pub fn is_denylisted` / `apply_denylist`; `pub enum AlgCategory { Kex, Cipher, Mac, HostKey }`; `pub fn apply_overrides(category, base, override_str)` implementing OpenSSH's `+algo` (append) / `-algo` (remove) / `^algo` (front-load) / `algo,algo` (replace) syntax; `pub fn anvil_default_kex` / `anvil_default_ciphers` / `anvil_default_macs` / `anvil_default_host_keys` returning the curated default base for `+/-/^` overrides; `pub struct Catalogue { kex, cipher, mac, host_key }` of `pub struct AlgEntry { name, is_default, denylisted }` and `pub fn all_supported() -> Catalogue` for `gitway list-algorithms` (FR-79).
   - **New `AnvilConfig` fields**: `kex_algorithms`, `ciphers`, `macs`, `host_key_algorithms` (each `Option<Vec<String>>`).  `None` selects the curated default; `Some` is a list already filtered through `apply_overrides`.  Matching `AnvilConfigBuilder` setters added.
   - **`apply_ssh_config` consumption**: `KexAlgorithms` / `Ciphers` / `MACs` / `HostKeyAlgorithms` directives are now plumbed through `apply_overrides` against the curated default and stored on the builder.  The M17 deferral warning that pointed at this work has been removed.
@@ -143,7 +143,7 @@ Tracked as work to land in subsequent releases:
 
 ### Added
 
-- **`HashKnownHosts yes` round-trip support** — the M19 chapter of [Gitway PRD §5.8.8](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md), FR-84.  Anvil now parses, matches, and emits OpenSSH's privacy-preserving `|1|<base64-salt>|<base64-hmac-sha1>` host-column format so a `known_hosts` file generated by `ssh-keygen -H` round-trips through Anvil cleanly and so Anvil-generated entries are readable by stock OpenSSH.
+- **`HashKnownHosts yes` round-trip support** — the M19 chapter of [Gitway PRD §5.8.8](https://github.com/Spacecraft-Software/Gitway/blob/main/Gitway-PRD-v1.0.md), FR-84.  Anvil now parses, matches, and emits OpenSSH's privacy-preserving `|1|<base64-salt>|<base64-hmac-sha1>` host-column format so a `known_hosts` file generated by `ssh-keygen -H` round-trips through Anvil cleanly and so Anvil-generated entries are readable by stock OpenSSH.
   - **New `cert_authority::HashedHost { salt: [u8;20], hash: [u8;20], fingerprint: String }`** with `pub fn matches(&self, host: &str) -> bool` running HMAC-SHA1(salt, host) and comparing in constant time via `Hmac::verify_slice`.  Skip-with-warn behaviour from M14.1's `|1|...|...` stub is replaced with real per-token parsing — comma-separated host columns can now mix hashed and plaintext tokens, each classified independently.
   - **New `KnownHostsFile.hashed: Vec<HashedHost>`** field — additive, no breaking change for consumers that destructure the existing three vectors.
   - **New `hostkey::append_known_host_hashed(path, host, fp)`** — emits a freshly-salted hashed line; round-trippable through `parse_known_hosts` + `HashedHost::matches`.
@@ -172,7 +172,7 @@ Tracked as work to land in subsequent releases:
 
 ### Added
 
-- **`tracing` infrastructure for the M15 verbose / JSONL debug surface** — the M15 chapter of [Gitway PRD §5.8.4](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md).  Anvil now emits structured `tracing::*!` events at per-category targets so a downstream consumer (Gitway CLI, integration tests, log aggregators) can install one [`tracing_subscriber::EnvFilter`] and get exactly the depth they want in each category — without scraping log lines.
+- **`tracing` infrastructure for the M15 verbose / JSONL debug surface** — the M15 chapter of [Gitway PRD §5.8.4](https://github.com/Spacecraft-Software/Gitway/blob/main/Gitway-PRD-v1.0.md).  Anvil now emits structured `tracing::*!` events at per-category targets so a downstream consumer (Gitway CLI, integration tests, log aggregators) can install one [`tracing_subscriber::EnvFilter`] and get exactly the depth they want in each category — without scraping log lines.
   - **New `anvil_ssh::log` module** — public surface: `pub const CAT_KEX = "anvil_ssh::kex"` (and `CAT_AUTH`, `CAT_CHANNEL`, `CAT_CONFIG`); `pub const CATEGORIES: &[&str]` for downstream input validation; `pub fn install_log_bridge() -> Result<(), tracing_log::log_tracer::SetLoggerError>` wraps `tracing_log::LogTracer::init()` with documented idempotency + ordering semantics.  The bridge funnels every existing `log::*!` call (Anvil, russh, ssh-key) through the consumer's `tracing` subscriber, so M15.4 (Gitway CLI) sees one event stream regardless of macro flavor.  Anvil itself does not install a subscriber — that policy belongs to the consumer.
   - **FR-66 instrumentation across `session.rs`, `auth.rs`, `ssh_config/resolver.rs`, `proxy/jump.rs`, `hostkey.rs`** — every host-key check, every authentication attempt, every applied `~/.ssh/config` directive (with `(file, line, directive, value)`), and every ProxyJump hop now emits a structured `tracing::*!` event.  Same `{host, fp, verdict, …}` shape across all five `check_server_key` outcome paths so a JSONL consumer can group / count.
 
@@ -191,7 +191,7 @@ Tracked as work to land in subsequent releases:
 
 ### Added
 
-- **`@cert-authority` parser and `host_key_trust` API** — the M14 chapter of [Gitway PRD §5.8.3](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md), partial.  Anvil now parses the OpenSSH `@cert-authority` and `@revoked` markers in `known_hosts`-style files, exposes the parsed view as a public type, and enforces `@revoked` as a policy-overriding blocklist during `check_server_key`.  Live cert validation against `@cert-authority` lines during the SSH handshake (FR-61, FR-62, FR-63) is **deferred** — see Notes.
+- **`@cert-authority` parser and `host_key_trust` API** — the M14 chapter of [Gitway PRD §5.8.3](https://github.com/Spacecraft-Software/Gitway/blob/main/Gitway-PRD-v1.0.md), partial.  Anvil now parses the OpenSSH `@cert-authority` and `@revoked` markers in `known_hosts`-style files, exposes the parsed view as a public type, and enforces `@revoked` as a policy-overriding blocklist during `check_server_key`.  Live cert validation against `@cert-authority` lines during the SSH handshake (FR-61, FR-62, FR-63) is **deferred** — see Notes.
   - **New `cert_authority` module** — `anvil_ssh::cert_authority::parse_known_hosts(content) -> Result<KnownHostsFile, AnvilError>`.  Public types: `CertAuthority` (host pattern + algorithm + SHA-256 fingerprint + raw OpenSSH text), `RevokedEntry` (host pattern + fingerprint), `DirectHostKey` (existing `host SHA256:fp` line), `KnownHostsFile` (the three vectors).  Markers are recognized case-insensitively per OpenSSH; comma-separated host patterns split into multiple entries; OpenSSH-format `algorithm AAAA... comment` pubkeys parse via `ssh_key::PublicKey::from_openssh` for fingerprint computation; hashed entries (`|1|...|...`) are skipped with a debug log; malformed `@revoked` lines warn-and-skip so an operator typo doesn't brick the connection.
   - **`anvil_ssh::hostkey::host_key_trust(host, custom_path) -> Result<HostKeyTrust, AnvilError>`** — new public fn returning the combined view: embedded fingerprints (GitHub / GitLab / Codeberg) + matching direct pins + matching `@cert-authority` entries + matching `@revoked` entries, all resolved in one `known_hosts` pass.  Reuses `ssh_config::lexer::wildcard_match` from M12 for pattern matching.  Unlike `fingerprints_for_host`, an empty trust set is **not** an error — the caller's policy decides.
   - **`@revoked` enforcement in `check_server_key`** (FR-64) — `GitwayHandler` gains a `revoked: Vec<String>` field; revoked fingerprints are checked **first**, before the `StrictHostKeyChecking::No` bypass and the fingerprint match path.  A presented key whose SHA-256 fingerprint matches a revoked entry is rejected with `host_key_mismatch` and a hint mentioning the `@revoked` entry — no policy can override.
@@ -203,7 +203,7 @@ Tracked as work to land in subsequent releases:
 
 ### Notes
 
-- **FR-61, FR-62, FR-63 deferred to a russh-upstream follow-up.** Russh 0.59's `Preferred::DEFAULT.key` host-key algorithm list contains only plain algorithms (`Algorithm::Ed25519`, `Ecdsa`, `Rsa`); the `*-cert-v01@openssh.com` variants are absent.  A server presenting its host key as a certificate falls back to a plain key during KEX, and Anvil's `check_server_key` callback never sees the certificate, so live cert validation against an `@cert-authority` line cannot run today.  The follow-up will land the validation step the moment russh exposes either an extended `Preferred::DEFAULT.key` with cert variants or a new `Handler::check_server_certificate(&Certificate)` hook.  See [Gitway PRD §10](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md) for the upstream-blocker risk row.
+- **FR-61, FR-62, FR-63 deferred to a russh-upstream follow-up.** Russh 0.59's `Preferred::DEFAULT.key` host-key algorithm list contains only plain algorithms (`Algorithm::Ed25519`, `Ecdsa`, `Rsa`); the `*-cert-v01@openssh.com` variants are absent.  A server presenting its host key as a certificate falls back to a plain key during KEX, and Anvil's `check_server_key` callback never sees the certificate, so live cert validation against an `@cert-authority` line cannot run today.  The follow-up will land the validation step the moment russh exposes either an extended `Preferred::DEFAULT.key` with cert variants or a new `Handler::check_server_certificate(&Certificate)` hook.  See [Gitway PRD §10](https://github.com/Spacecraft-Software/Gitway/blob/main/Gitway-PRD-v1.0.md) for the upstream-blocker risk row.
 - **Public-API additions only** — no breaking changes from 0.4.x.  Existing `fingerprints_for_host(host, custom_path)` keeps its `Vec<String>` shape.
 - **Negated host patterns** (`!host`) and **hashed host names** (`|1|...|...`) in `@cert-authority` entries are pre-existing limitations carried into M14 — documented as follow-ups.
 
@@ -218,7 +218,7 @@ Tracked as work to land in subsequent releases:
 
 ### Added
 
-- **`ProxyCommand` and `ProxyJump` consumers** — the M13 chapter of [Gitway PRD §5.8.2](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md). Anvil now actually consumes the directives M12 captured into `ResolvedSshConfig`:
+- **`ProxyCommand` and `ProxyJump` consumers** — the M13 chapter of [Gitway PRD §5.8.2](https://github.com/Spacecraft-Software/Gitway/blob/main/Gitway-PRD-v1.0.md). Anvil now actually consumes the directives M12 captured into `ResolvedSshConfig`:
   - **`AnvilSession::connect_via_proxy_command(config, template, alias)`** (FR-55) — token-expands `%h %p %r %n %%` against `config.host` / `config.port` / `config.username` / `alias`, spawns the resulting command line through the platform shell (`sh -c` on Unix, `cmd /C` on Windows), and uses the child's stdin/stdout as the SSH transport via `russh::client::connect_stream`. The literal `none` (case-insensitive) is rejected as the FR-59 disable sentinel.
   - **`AnvilSession::connect_via_jump_hosts(config, jumps)`** (FR-56, FR-57, NFR-17) — chains through up to `MAX_JUMP_HOPS = 8` bastions via russh `direct-tcpip` channels, with **independent host-key verification at every hop** (failure at hop n+1 aborts the entire chain — no partial-success path). Each bastion is authenticated via `authenticate_best` so the next hop's `direct-tcpip` channel can be opened through it.
 - **New `proxy` module** — public surface:
@@ -247,7 +247,7 @@ Tracked as work to land in subsequent releases:
 
 ### Added
 
-- **`ssh_config(5)` parser and resolver** — `anvil_ssh::ssh_config::resolve(host, paths)` returns a `ResolvedSshConfig` containing every directive from [Gitway PRD §5.8.1](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md): `HostName`, `User`, `Port`, `IdentityFile` (multi), `IdentitiesOnly`, `IdentityAgent`, `CertificateFile` (multi), `ProxyCommand`, `ProxyJump`, `UserKnownHostsFile` (multi), `StrictHostKeyChecking`, `HostKeyAlgorithms`, `KexAlgorithms`, `Ciphers`, `MACs`, `ConnectTimeout`, `ConnectionAttempts`. Per-directive provenance is preserved for `gitway diag` (NFR-24) and `gitway config show`. `Match` blocks are recognized for correct directive grouping but never match a host — full `Match` semantics are deferred to v1.1 per PRD §12 Q1.
+- **`ssh_config(5)` parser and resolver** — `anvil_ssh::ssh_config::resolve(host, paths)` returns a `ResolvedSshConfig` containing every directive from [Gitway PRD §5.8.1](https://github.com/Spacecraft-Software/Gitway/blob/main/Gitway-PRD-v1.0.md): `HostName`, `User`, `Port`, `IdentityFile` (multi), `IdentitiesOnly`, `IdentityAgent`, `CertificateFile` (multi), `ProxyCommand`, `ProxyJump`, `UserKnownHostsFile` (multi), `StrictHostKeyChecking`, `HostKeyAlgorithms`, `KexAlgorithms`, `Ciphers`, `MACs`, `ConnectTimeout`, `ConnectionAttempts`. Per-directive provenance is preserved for `gitway diag` (NFR-24) and `gitway config show`. `Match` blocks are recognized for correct directive grouping but never match a host — full `Match` semantics are deferred to v1.1 per PRD §12 Q1.
 - New flat re-exports at the crate root: `AlgList`, `DirectiveSource`, `ResolvedSshConfig`, `SshConfigPaths`, `StrictHostKeyChecking`. The `resolve` free function lives at `anvil_ssh::ssh_config::resolve` to keep the top-level namespace uncluttered.
 - New builder method `AnvilConfigBuilder::apply_ssh_config(&ResolvedSshConfig)` layers ssh_config-derived defaults into the builder. CLI-supplied values still win — call `apply_ssh_config()` *before* CLI overrides.
 - `AnvilConfigBuilder::add_identity_file()` and `AnvilConfigBuilder::identity_files()` for the multi-key API.
@@ -291,7 +291,7 @@ The deprecated 0.2.x methods continue to compile (with deprecation warnings) unt
   - `GitwayConfig` → `AnvilConfig`
   - `GitwayError` → `AnvilError`
 
-  The legacy names remain available as `#[deprecated]` re-exports for one major version (per [Gitway PRD §7.4](https://github.com/steelbore/gitway/blob/main/Gitway-PRD-v1.0.md)), so consumers that depended on `anvil-ssh = "0.1"` continue to compile with a deprecation warning until they migrate.  Migration is mechanical:
+  The legacy names remain available as `#[deprecated]` re-exports for one major version (per [Gitway PRD §7.4](https://github.com/Spacecraft-Software/gitway/blob/main/Gitway-PRD-v1.0.md)), so consumers that depended on `anvil-ssh = "0.1"` continue to compile with a deprecation warning until they migrate.  Migration is mechanical:
 
   ```rust
   // before
@@ -307,13 +307,13 @@ The deprecated 0.2.x methods continue to compile (with deprecation warnings) unt
 ### Notes
 
 - All internal references in `src/` (struct definitions, doc-comments, tests) have been updated to the new names.  `cargo build`, `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check` all pass on the renamed source.
-- Downstream tracking issue: the [Steelbore/Gitway](https://github.com/Steelbore/Gitway) workspace bumps its `anvil-ssh` pin to `0.2.0` in a follow-up PR and renames its in-source `GitwaySession`/`Config`/`Error` references to drop the deprecation warnings.
+- Downstream tracking issue: the [Spacecraft-Software/Gitway](https://github.com/Spacecraft-Software/Gitway) workspace bumps its `anvil-ssh` pin to `0.2.0` in a follow-up PR and renames its in-source `GitwaySession`/`Config`/`Error` references to drop the deprecation warnings.
 
 ## [0.1.0] — 2026-05-03
 
 ### Added
 
-- Initial cold-start extraction from [Steelbore/Gitway](https://github.com/steelbore/gitway) at commit [`28abee6fef3fb1a0ba3a69af9c78e27d842763db`](https://github.com/steelbore/gitway/commit/28abee6fef3fb1a0ba3a69af9c78e27d842763db).
+- Initial cold-start extraction from [Spacecraft-Software/Gitway](https://github.com/Spacecraft-Software/gitway) at commit [`28abee6fef3fb1a0ba3a69af9c78e27d842763db`](https://github.com/Spacecraft-Software/gitway/commit/28abee6fef3fb1a0ba3a69af9c78e27d842763db).
 - Pure-Rust SSH stack covering everything Git needs:
   - SSH transport over `russh` with the `aws-lc-rs` backend (post-quantum-ready).
   - Pinned host-key verification for GitHub, GitLab, and Codeberg.
@@ -325,5 +325,5 @@ The deprecated 0.2.x methods continue to compile (with deprecation warnings) unt
 
 ### Notes
 
-- Type names carried forward from the source crate as `GitwaySession` / `GitwayConfig` / `GitwayError` to keep the lift-and-shift extraction zero-rename.  These were superseded in 0.2.0 (see above); the legacy names remain available as `#[deprecated]` re-exports for one major version per [Gitway PRD §7.4](https://github.com/steelbore/gitway/blob/main/Gitway-PRD-v1.0.md).
-- This is a *cold-start* extraction: the new repo's git history starts here.  Per-commit history of the original library remains in [steelbore/gitway](https://github.com/steelbore/gitway) — `git blame` and historical context for any line of code can be found there.
+- Type names carried forward from the source crate as `GitwaySession` / `GitwayConfig` / `GitwayError` to keep the lift-and-shift extraction zero-rename.  These were superseded in 0.2.0 (see above); the legacy names remain available as `#[deprecated]` re-exports for one major version per [Gitway PRD §7.4](https://github.com/Spacecraft-Software/gitway/blob/main/Gitway-PRD-v1.0.md).
+- This is a *cold-start* extraction: the new repo's git history starts here.  Per-commit history of the original library remains in [Spacecraft-Software/gitway](https://github.com/Spacecraft-Software/gitway) — `git blame` and historical context for any line of code can be found there.

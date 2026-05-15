@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Rust guideline compliant 2026-03-30
 //! Structured tracing categories + log/tracing bridge installer
-//! ([FR-65](https://github.com/Steelbore/Gitway/blob/main/Gitway-PRD-v1.0.md),
+//! ([FR-65](https://github.com/Spacecraft-Software/Gitway/blob/main/Gitway-PRD-v1.0.md),
 //! FR-69 of Gitway PRD §5.8.4).
 //!
 //! Anvil emits `tracing::*!` events with per-category `target` strings

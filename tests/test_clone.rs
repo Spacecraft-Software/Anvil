@@ -50,7 +50,7 @@ fn gitway_binary() -> PathBuf {
 /// - The cloned directory contains a `.git/` subdirectory.
 /// - The `git clone` exit code is 0.
 ///
-/// Uses `github.com/steelbore/gitway` (this repository) as the test target
+/// Uses `github.com/Spacecraft-Software/gitway` (this repository) as the test target
 /// since it is always accessible and small.
 #[test]
 fn git_clone_via_gitway_succeeds() {
@@ -72,7 +72,7 @@ fn git_clone_via_gitway_succeeds() {
         .args([
             "clone",
             "--depth=1",
-            "git@github.com:steelbore/gitway.git",
+            "git@github.com:Spacecraft-Software/gitway.git",
             dest.to_str().expect("UTF-8 path"),
         ])
         .env("GIT_SSH_COMMAND", binary.to_str().expect("UTF-8 path"))
@@ -116,7 +116,7 @@ fn git_clone_without_key_exits_nonzero() {
         .args([
             "clone",
             "--depth=1",
-            "git@github.com:steelbore/gitway.git",
+            "git@github.com:Spacecraft-Software/gitway.git",
             tmp_dest.path().join("repo").to_str().expect("UTF-8 path"),
         ])
         .env("GIT_SSH_COMMAND", binary.to_str().expect("UTF-8 path"))
