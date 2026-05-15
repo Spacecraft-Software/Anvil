@@ -2,7 +2,32 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [1.0.0] — TBD
+## [1.1.0] — 2026-05-15
+
+Minor release.  Reclassified from `1.0.1` to honor the SemVer
+commitment in the 1.0.0 section: patch bumps are bug-fixes-only with
+no API additions; the new symbols below shift this release into
+minor-bump territory.
+
+### Added
+
+- **`sshsig::find_principals_any_ns(armored, allowed)`** and
+  **`AllowedSigners::find_principals_any_ns(&PublicKey)`** —
+  namespace-agnostic siblings of the existing `find_principals`
+  lookups.  They mirror upstream `ssh-keygen -Y find-principals
+  -s <sig> -f <allowed>`, which git's commit-verification path
+  invokes without `-n` (namespace filtering belongs to `sign` /
+  `verify` / `check-novalidate`, not `find-principals`).  The
+  strict namespace-aware variants are unchanged, so callers that
+  pin to a namespace keep their current behavior.
+
+### Changed
+
+- **Pin LF line endings via `.gitattributes`.**  Prevents CRLF
+  contamination on Windows checkouts from rewriting test fixtures
+  and golden files that intentionally end with `\n`.
+
+## [1.0.0] — 2026-05-05
 
 The first stable release of `anvil-ssh`.  This release declares the
 public API **stable under SemVer**: every `pub` symbol that's
