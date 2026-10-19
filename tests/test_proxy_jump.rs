@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use anvil_ssh::proxy::JumpHost;
 use anvil_ssh::{AnvilConfig, AnvilSession, StrictHostKeyChecking};
-use russh::keys::ssh_key::rand_core::OsRng;
+use russh::keys::key::safe_rng;
 use russh::keys::{Algorithm, HashAlg, PrivateKey};
 use russh::server::{Auth, Msg, Server as _, Session};
 use russh::{server, ChannelId};
@@ -179,7 +179,7 @@ async fn relay_channel_to_tcp(
 /// `(host_key, port)`.  The server runs inside the spawned task and
 /// stays alive until the test's tokio runtime tears down.
 async fn spawn_server() -> (PrivateKey, u16) {
-    let host_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("ed25519 key");
+    let host_key = PrivateKey::random(&mut safe_rng(), Algorithm::Ed25519).expect("ed25519 key");
     let config = Arc::new(server::Config {
         inactivity_timeout: Some(Duration::from_secs(30)),
         auth_rejection_time: Duration::from_millis(50),

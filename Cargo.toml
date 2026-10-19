@@ -17,7 +17,7 @@ rust-version  = "1.88"
 [dependencies]
 # Use aws-lc-rs crypto backend: non-FIPS builds require no CMake/bindgen/Go,
 # and it provides post-quantum cryptography (PQC) primitives that `ring` lacks.
-russh         = { version = "0.59", default-features = false, features = ["flate2", "aws-lc-rs", "rsa"] }
+russh         = { version = "0.60.3", default-features = false, features = ["flate2", "aws-lc-rs", "rsa"] }
 tokio         = { version = "1",    features = ["io-util", "io-std", "rt-multi-thread", "net", "sync", "macros", "signal", "time", "process"] }
 thiserror     = "2"
 log           = "0.4"
