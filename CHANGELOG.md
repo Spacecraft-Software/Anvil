@@ -2,6 +2,26 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Security
+
+- **Bump `russh` 0.59 → 0.60.3** to pick up fixes for
+  [RUSTSEC-2026-0154](https://rustsec.org/advisories/RUSTSEC-2026-0154)
+  (unbounded agent-frame allocation in the agent client and server) and
+  [RUSTSEC-2026-0153](https://rustsec.org/advisories/RUSTSEC-2026-0153)
+  (unchecked `CryptoVec` growth).  `aes` is held at 0.9.2 in `Cargo.lock`
+  because 0.9.3 needs Rust 1.89 and the MSRV stays at 1.88.
+- Dev-only: `crossbeam-epoch` 0.9.18 → 0.9.21
+  ([RUSTSEC-2026-0204](https://rustsec.org/advisories/RUSTSEC-2026-0204)),
+  pulled in by `criterion`.
+
+### Changed
+
+- `russh` re-exports a forked `ssh-key` that uses `rand_core` 0.10, so
+  the ProxyJump test and bench now draw host keys from
+  `russh::keys::key::safe_rng()` instead of `ssh_key::rand_core::OsRng`.
+
 ## [1.1.0] — 2026-05-15
 
 Minor release.  Reclassified from `1.0.1` to honor the SemVer

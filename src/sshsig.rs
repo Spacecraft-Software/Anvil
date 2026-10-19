@@ -359,8 +359,7 @@ mod tests {
         // entry; the any-ns lookup must still return its principals.
         let key = generate(KeyType::Ed25519, None, "erin@test").unwrap();
         let pubkey_line = key.public_key().to_openssh().unwrap();
-        let allowed_text =
-            format!("erin@example.com namespaces=\"signing\" {pubkey_line}");
+        let allowed_text = format!("erin@example.com namespaces=\"signing\" {pubkey_line}");
         let allowed = AllowedSigners::parse(&allowed_text).unwrap();
 
         let armored = sign(&mut Cursor::new(b"x"), &key, "git", HashAlg::Sha512).unwrap();
