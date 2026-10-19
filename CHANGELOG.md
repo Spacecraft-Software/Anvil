@@ -2,7 +2,11 @@
 
 All notable changes to Anvil are documented here.  Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [1.2.0] — 2026-10-19
+
+Minor release.  `russh` types are part of the public API, so moving
+from `russh` 0.59 to 0.60 requires consumers that depend on `russh`
+directly to move with it.
 
 ### Security
 
